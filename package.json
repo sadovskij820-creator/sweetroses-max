@@ -1,0 +1,13 @@
+{
+  "name": "sweet-roses-max-mini-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Мини-приложение для MAX (и Telegram) мастерской клубники в шоколаде Sweet Roses — демо «Цифровые решения для бизнеса»",
+  "main": "index.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node index.js"
+  }
+}

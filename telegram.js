@@ -1,0 +1,100 @@
+"use strict";
+const crypto = require("crypto");
+
+/**
+ * Validates Telegram Mini App initData.
+ * https://core.telegram.org/bots/webapps#validating-data-received-via-the-mini-app
+ * Returns the parsed user object or null.
+ */
+function validateInitData(initData, botToken, maxAgeSec = 86400, now = Date.now()) {
+  if (!initData || !botToken) return null;
+  const params = new URLSearchParams(initData);
+  const hash = params.get("hash");
+  if (!hash) return null;
+  params.delete("hash");
+  const dataCheckString = [...params.entries()].map(([k, v]) => `${k}=${v}`).sort().join("\n");
+  const secret = crypto.createHmac("sha256", "WebAppData").update(botToken).digest();
+  const calc = crypto.createHmac("sha256", secret).update(dataCheckString).digest("hex");
+  const a = Buffer.from(calc, "hex"), b = Buffer.from(hash, "hex");
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+  const authDate = Number(params.get("auth_date") || 0);
+  if (!authDate || now / 1000 - authDate > maxAgeSec) return null;
+  try { return JSON.parse(params.get("user") || "null"); } catch (e) { return null; }
+}
+
+/** Builds a signed initData string — used by tests and local dev. */
+function signInitData(user, botToken, authDate = Math.floor(Date.now() / 1000), extra = {}) {
+  const params = new URLSearchParams(Object.assign({ auth_date: String(authDate), query_id: "TEST", user: JSON.stringify(user) }, extra));
+  const dcs = [...params.entries()].map(([k, v]) => `${k}=${v}`).sort().join("\n");
+  const secret = crypto.createHmac("sha256", "WebAppData").update(botToken).digest();
+  params.set("hash", crypto.createHmac("sha256", secret).update(dcs).digest("hex"));
+  return params.toString();
+}
+
+function createBot({ token, webAppUrl, log = console }) {
+  const base = `https://api.telegram.org/bot${token}`;
+  async function call(method, body) {
+    const res = await fetch(`${base}/${method}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+    const data = await res.json().catch(() => ({}));
+    if (!data.ok) throw new Error(`Telegram ${method}: ${data.description || res.status}`);
+    return data.result;
+  }
+  let currentUrl = webAppUrl || "";
+  let username = "";
+  const openButton = (text) => ({ inline_keyboard: [[{ text, web_app: { url: currentUrl } }]] });
+  const setMenu = () => currentUrl ? call("setChatMenuButton", { menu_button: { type: "web_app", text: "Каталог", web_app: { url: currentUrl } } }) : Promise.resolve();
+  /** Changes the mini app address (e.g. detected from the hosting domain) and updates the bot's menu button. */
+  function setWebAppUrl(url) {
+    if (!url || url === currentUrl) return;
+    currentUrl = url;
+    setMenu().catch((e) => log.error("Menu button: " + e.message));
+  }
+
+  async function sendMessage(chatId, text, extra) {
+    return call("sendMessage", Object.assign({ chat_id: chatId, text, parse_mode: "HTML", disable_web_page_preview: true }, extra || {}));
+  }
+
+  let running = false;
+  async function startPolling(hooks) {
+    hooks = hooks || {};
+    if (running) return;
+    running = true;
+    try {
+      try { username = (await call("getMe")).username || ""; } catch (e) { /* not critical */ }
+      await call("deleteWebhook", { drop_pending_updates: false });
+      await setMenu();
+      await call("setMyCommands", { commands: [{ command: "start", description: "Открыть каталог" }, { command: "id", description: "Мой Telegram ID" }] });
+    } catch (e) { log.error("Bot setup:", e.message); }
+    let offset = 0;
+    while (running) {
+      try {
+        const updates = await call("getUpdates", { offset, timeout: 50, allowed_updates: ["message"] });
+        for (const u of updates) {
+          offset = u.update_id + 1;
+          const m = u.message;
+          if (!m || !m.text) continue;
+          const chatId = m.chat.id;
+          if (m.text.startsWith("/start")) {
+            const res = (hooks.onStart && hooks.onStart(m.from || {}, m.text.slice(6).trim().replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64))) || "";
+            const extra = typeof res === "string" ? res : res.text || "";
+            await sendMessage(chatId,
+              "Здравствуйте! Это <b>Sweet Roses</b> — мастерская клубники в шоколаде в Иркутске 🍓\n\nНажмите кнопку ниже, чтобы выбрать подарок и оставить заявку. Менеджер перезвонит в течение 10 минут (ежедневно 10:00–20:00)." + extra,
+              currentUrl ? { reply_markup: openButton("Открыть каталог") } : {}).catch((e) => log.error(e.message));
+          } else if (m.text.startsWith("/id")) {
+            const admin = hooks.isAdmin && hooks.isAdmin(m.from && m.from.id);
+            await sendMessage(chatId, `ID этого чата: <code>${chatId}</code>${admin ? "\n\nВставьте его в «Управление → Настройки → Куда присылать заявки»." : ""}`).catch((e) => log.error(e.message));
+          }
+        }
+      } catch (e) {
+        if (/Conflict/i.test(e.message)) log.error("Этот бот уже запущен в другом месте (например, на компьютере). Остановите второй запуск — работать должен только один.");
+        else log.error("Нет связи с Telegram (" + e.message + "). Бот переподключится сам.");
+        await new Promise((r) => setTimeout(r, 5000));
+      }
+    }
+  }
+  function stop() { running = false; }
+
+  return { call, sendMessage, startPolling, stop, openButton, setWebAppUrl, getWebAppUrl: () => currentUrl, getUsername: () => username };
+}
+
+module.exports = { validateInitData, signInitData, createBot };
