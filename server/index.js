@@ -165,10 +165,10 @@ function createApp(opts = {}) {
   }
 
   const routes = [];
-  const on = (method, pattern, handler, { admin = false } = {}) => {
+  const on = (method, pattern, handler, { admin = false, raw = false } = {}) => {
     const keys = [];
     const re = new RegExp("^" + pattern.replace(/:(\w+)/g, (_, k) => (keys.push(k), "([^/]+)")) + "$");
-    routes.push({ method, re, keys, handler, admin });
+    routes.push({ method, re, keys, handler, admin, raw });
   };
 
   /* ---------- public ---------- */
@@ -360,6 +360,26 @@ function createApp(opts = {}) {
   /* ---------- admin ---------- */
   const COLLS = ["products", "categories", "addons"];
   const findColl = (name) => { if (!COLLS.includes(name)) throw httpError(404, "Неизвестный раздел"); return store.getCatalog()[name]; };
+  /* ---------- photos uploaded from the admin's phone: /data/uploads/<random>.<ext>, served at /u/<name> ---------- */
+  const UPLOAD_RE = /^[a-f0-9]{24}\.(jpg|png|webp)$/;
+  const okImage = (u) => /^https:\/\//.test(u) || (/^\/u\//.test(u) && UPLOAD_RE.test(u.slice(3)));
+  const uploadsDir = path.join(config.dataDir, "uploads");
+  function imageKind(buf) {
+    if (buf.length > 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return "jpg";
+    if (buf.length > 8 && buf.slice(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "png";
+    if (buf.length > 12 && buf.toString("ascii", 0, 4) === "RIFF" && buf.toString("ascii", 8, 12) === "WEBP") return "webp";
+    return null;
+  }
+  on("POST", "/api/admin/upload", ({ body }) => {
+    if (!Buffer.isBuffer(body) || !body.length) throw httpError(400, "Фото не получено");
+    const kind = imageKind(body);
+    if (!kind) throw httpError(400, "Это не фото. Подходят JPG, PNG и WebP");
+    fs.mkdirSync(uploadsDir, { recursive: true });
+    const name = crypto.randomBytes(12).toString("hex") + "." + kind;
+    fs.writeFileSync(path.join(uploadsDir, name), body);
+    return { url: "/u/" + name };
+  }, { admin: true, raw: true });
+
   const PRODUCT_FIELDS = { title: "s", short: "s", intro: "s", details: "a", images: "a", cats: "a", price: "n", oldPrice: "n?", chocolateChoices: "n", hidden: "b" };
   const OTHER_FIELDS = { categories: { title: "s", hidden: "b" }, addons: { title: "s", price: "n", hidden: "b" } };
   function pick(body, spec) {
@@ -373,7 +393,7 @@ function createApp(opts = {}) {
       if (t === "b") out[k] = !!v;
       if (t === "a") out[k] = (Array.isArray(v) ? v : []).map((x) => String(x).trim().slice(0, 500)).filter(Boolean).slice(0, 30);
     }
-    if (out.images) out.images = out.images.filter((u) => /^https:\/\//.test(u));
+    if (out.images) out.images = out.images.filter(okImage);
     return out;
   }
 
@@ -532,7 +552,7 @@ function createApp(opts = {}) {
     const s = store.getCatalog().settings;
     const str = (v, n) => String(v == null ? "" : v).trim().slice(0, n);
     const arr = (v) => (Array.isArray(v) ? v : []).map((x) => str(x, 600)).filter(Boolean).slice(0, 20);
-    if (body.banner) s.banner = { title: str(body.banner.title, 120), text: str(body.banner.text, 200), image: /^https:\/\//.test(body.banner.image || "") ? str(body.banner.image, 500) : s.banner.image };
+    if (body.banner) s.banner = { title: str(body.banner.title, 120), text: str(body.banner.text, 200), image: okImage(body.banner.image || "") ? str(body.banner.image, 500) : s.banner.image };
     for (const k of ["phone", "address", "hours", "successText"]) if (k in body) s[k] = str(body[k], 500);
     if ("about" in body) s.about = arr(body.about);
     if ("delivery" in body) s.delivery = arr(body.delivery);
@@ -595,6 +615,23 @@ function createApp(opts = {}) {
       req.on("error", reject);
     });
   }
+  const MAX_UPLOAD = 4e6; // the app shrinks photos to ~300 KB before sending; this is a hard ceiling
+  function readRaw(req, limit) {
+    return new Promise((resolve, reject) => {
+      let size = 0; const chunks = [];
+      req.on("data", (c) => { size += c.length; if (size > limit) { reject(httpError(413, "Фото слишком большое")); req.destroy(); } else chunks.push(c); });
+      req.on("end", () => resolve(Buffer.concat(chunks)));
+      req.on("error", reject);
+    });
+  }
+  function serveUpload(req, res, name) {
+    const file = path.join(uploadsDir, name);
+    if (!UPLOAD_RE.test(name) || !fs.existsSync(file)) { res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" }); return res.end("Не найдено"); }
+    const type = { jpg: "image/jpeg", png: "image/png", webp: "image/webp" }[name.split(".").pop()];
+    res.writeHead(200, { "Content-Type": type, "Cache-Control": "public, max-age=31536000, immutable", "X-Content-Type-Options": "nosniff" });
+    if (req.method === "HEAD") return res.end();
+    fs.createReadStream(file).pipe(res);
+  }
   function serveStatic(req, res, pathname) {
     let rel = decodeURIComponent(pathname);
     if (rel === "/" || rel === "") rel = "/index.html";
@@ -626,6 +663,7 @@ function createApp(opts = {}) {
     detectPublicUrl(req);
     if (!url.pathname.startsWith("/api/")) {
       if (req.method !== "GET" && req.method !== "HEAD") { res.writeHead(405); return res.end(); }
+      if (url.pathname.startsWith("/u/")) return serveUpload(req, res, url.pathname.slice(3));
       return serveStatic(req, res, url.pathname);
     }
     try {
@@ -635,7 +673,7 @@ function createApp(opts = {}) {
       const params = Object.fromEntries(route.keys.map((k, i) => [k, decodeURIComponent(m[i + 1])]));
       const user = userFrom(req);
       if (route.admin && !isAdmin(user)) throw httpError(403, "Нет доступа к управлению");
-      const body = req.method === "GET" ? {} : await readBody(req);
+      const body = req.method === "GET" ? {} : route.raw ? await readRaw(req, MAX_UPLOAD) : await readBody(req);
       const ip = (req.headers["x-forwarded-for"] || req.socket.remoteAddress || "").split(",")[0].trim();
       const data = await route.handler({ params, body, user, ip, query: url.searchParams });
       if (data && data.__raw) { res.writeHead(200, { "Content-Type": data.__raw.type, "Cache-Control": "no-store" }); return res.end(data.__raw.body); }
