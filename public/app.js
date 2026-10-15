@@ -641,6 +641,7 @@
       else if (tab === "customers") data = await api(`/api/admin/customers?segment=${encodeURIComponent(state.admin.segment)}&q=${encodeURIComponent(state.admin.cq)}`);
       else if (tab === "promo") data = await api("/api/admin/sources");
       else if (tab.startsWith("customer/")) data = await api(`/api/admin/customers/${encodeURIComponent(tab.slice(9))}`);
+      else if (tab === "staff") data = await api("/api/admin/staff");
       else if (tab === "broadcast") {
         const [h, ...counts] = await Promise.all([api("/api/admin/broadcasts"), ...["all", "regular", "new", "sleeping"].map((sg) => api("/api/admin/broadcast/preview?segment=" + sg))]);
         data = { list: h.list, counts: { all: counts[0].count, regular: counts[1].count, new: counts[2].count, sleeping: counts[3].count } };
@@ -653,18 +654,19 @@
     render();
   }
   function adminTabs(active) {
-    const tabs = [["orders", "Заявки"], ["customers", "Клиенты"], ["broadcast", "Рассылки"], ["promo", "Ссылки и QR"], ["loyalty", "Бонусы и оплата"], ["products", "Товары"], ["categories", "Категории"], ["extras", "Допы и промо"], ["settings", "Настройки"], ["stats", "Статистика"]];
+    const owner = !!state.me.isOwner;
+    const tabs = [["orders", "Заявки"], owner && ["pay", "💳 Оплата"], owner && ["staff", "👤 Сотрудники"], ["customers", "Клиенты"], ["products", "Товары"], ["categories", "Категории"], ["extras", "Допы и промо"], ["broadcast", "Рассылки"], ["promo", "Ссылки и QR"], owner && ["loyalty", "Бонусы"], owner && ["settings", "Настройки"], ["stats", "Статистика"]].filter(Boolean);
     return `<div class="admin-tabs">${tabs.map(([k, t]) => `<button class="chip" aria-pressed="${k === active}" data-action="adminTab" data-tab="${k}">${t}</button>`).join("")}</div>`;
   }
   function viewAdmin(tab, arg) {
     if (!state.me.isAdmin) return `<div class="page empty"><h1 class="display">Нет доступа</h1><p>Панель управления видна только администраторам.</p></div>`;
-    const key = tab === "customer" ? "customer/" + arg : tab;
+    const key = tab === "customer" ? "customer/" + arg : tab === "pay" ? "loyalty" : tab;
     const fresh = state.admin.tab === key && state.admin.data;
     if (!fresh && state.admin.loadingTab !== key) setTimeout(() => loadAdmin(key));
     const d = fresh ? state.admin.data : null;
     let body = `<p class="muted">Загружаем…</p>`;
     if (d && d.error) body = `<p class="err">${esc(d.error)}</p>`;
-    else if (d) body = ({ orders: adminOrders, products: adminProducts, categories: adminCategories, extras: adminExtras, settings: adminSettings, stats: adminStats, edit: adminEdit, customers: adminCustomers, customer: adminCustomer, broadcast: adminBroadcast, loyalty: adminLoyalty, promo: adminPromo }[tab] || adminOrders)(d, arg);
+    else if (d) body = ({ pay: adminTransfer, staff: adminStaff, orders: adminOrders, products: adminProducts, categories: adminCategories, extras: adminExtras, settings: adminSettings, stats: adminStats, edit: adminEdit, customers: adminCustomers, customer: adminCustomer, broadcast: adminBroadcast, loyalty: adminLoyalty, promo: adminPromo }[tab] || adminOrders)(d, arg);
     return `<div class="page"><h1 class="display" style="font-size:34px;margin-top:8px">Управление</h1>${tab === "edit" || tab === "customer" ? "" : adminTabs(tab)}${body}</div>`;
   }
   function payBadge(o) {
@@ -939,7 +941,22 @@
       <input type="hidden" name="provider" value="${esc(P.provider)}">
       <p class="muted" style="font-size:12.5px;margin-top:8px">${P.provider === "demo" ? "Демо: оплата без настоящих денег — чтобы показать, как это работает." : d.env.yookassa ? "ЮKassa подключена. Деньги приходят прямо на счёт магазина. Адрес для уведомлений в кабинете ЮKassa: …/api/pay/yookassa" : "ЮKassa не подключена: ключи магазина (YOOKASSA_SHOP_ID и YOOKASSA_SECRET_KEY) добавляются в настройки сервера."}</p>
       <button class="btn block" type="submit" style="margin-top:16px">Сохранить</button></form>
-      ${adminTransfer(d)}`;
+      <p class="muted" style="font-size:12.5px;margin-top:12px">Оплата переводом на карту — во вкладке «💳 Оплата».</p>`;
+  }
+  function adminStaff(d) {
+    const dt = (iso) => new Intl.DateTimeFormat("ru-RU", { timeZone: TZ, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(iso));
+    return `<p class="muted" style="font-size:13.5px;margin-top:0">Менеджеры видят заявки, клиентов и товары и получают заявки в чат с ботом. Настройки, оплату и сотрудников меняет только владелец.</p>
+      <button class="btn block" data-action="staffInvite">+ Пригласить менеджера</button>
+      ${state.admin.inviteLink ? `<div class="info-card" style="margin-top:12px"><p><b>Ссылка-приглашение готова</b></p>
+        <p class="muted" style="font-size:13px;margin-top:4px">Отправьте её сотруднику. Он откроет её и нажмёт «Старт» — и сразу станет менеджером. Ссылка одноразовая, действует сутки.</p>
+        <div class="src-link" style="margin-top:8px">${esc(state.admin.inviteLink)}</div>
+        <div style="display:flex;gap:8px;margin-top:10px"><button class="btn small" data-action="shareInvite">Отправить</button><button class="btn soft small" data-action="copyText" data-text="${esc(state.admin.inviteLink)}">Скопировать</button></div></div>` : ""}
+      <h2 class="h2" style="font-size:22px">Кто имеет доступ</h2>
+      ${d.owners.map((o) => `<div class="cust-row"><span class="av">${esc((o.name || "?").slice(0, 1))}</span><span class="mid"><b>${esc(o.name)}</b><small>${o.username ? "@" + esc(o.username) : "ID " + esc(String(o.id))}</small></span><span class="rt"><span class="seg-badge seg-regular">Владелец</span></span></div>`).join("")}
+      ${d.staff.map((m) => `<div class="cust-row"><span class="av">${esc((m.name || "?").slice(0, 1))}</span><span class="mid"><b>${esc(m.name)}</b><small>${m.username ? "@" + esc(m.username) + " · " : ""}менеджер с ${ddmm(m.addedAt)}</small>
+        <label class="check" style="margin:6px 0 0;font-size:12.5px"><input type="checkbox" data-action="staffNotify" data-id="${esc(String(m.id))}" ${m.notify !== false ? "checked" : ""}>Получает заявки в чат</label></span>
+        <span class="rt"><button class="btn ghost small" data-action="staffRemove" data-id="${esc(String(m.id))}" data-name="${esc(m.name)}">Убрать</button></span></div>`).join("") || `<p class="muted">Менеджеров пока нет.</p>`}
+      ${d.invites.length ? `<h2 class="h2" style="font-size:22px">Неиспользованные приглашения</h2>${d.invites.map((x) => `<div class="addon"><span class="t">Действует до ${dt(x.expiresAt)}</span><span class="p"><button class="btn ghost small" data-action="copyText" data-text="${esc(x.link)}">Скопировать</button> <button class="icon-x" data-action="inviteDel" data-code="${esc(x.code)}" aria-label="Отменить">×</button></span></div>`).join("")}` : ""}`;
   }
   function adminTransfer(d) {
     const T = d.transferResolved || {};
@@ -1080,6 +1097,20 @@
       if (tg && tg.showConfirm) tg.showConfirm(q, (yes) => yes && go()); else if (window.confirm(q)) go();
       return;
     }
+    if (act === "staffInvite") {
+      const r = await adminCall("/api/admin/staff/invite", "POST", {}, null);
+      if (r) { state.admin.inviteLink = r.link; state.admin.data = r; state.admin.tab = "staff"; render(); }
+      return;
+    }
+    if (act === "shareInvite") return shareLink(`Приглашение в управление ${state.catalog.settings.brand}: откройте ссылку и нажмите «Старт»`, state.admin.inviteLink);
+    if (act === "staffNotify") { await adminCall(`/api/admin/staff/${ds.id}`, "PATCH", { notify: el.checked }, "staff"); return; }
+    if (act === "staffRemove") {
+      const go = () => adminCall(`/api/admin/staff/${ds.id}`, "DELETE", null, "staff").then((r) => r && toast("Доступ закрыт"));
+      const q = `Убрать ${ds.name} из сотрудников? Доступ к управлению и заявкам пропадёт сразу.`;
+      if (tg && tg.showConfirm) tg.showConfirm(q, (yes) => yes && go()); else if (window.confirm(q)) go();
+      return;
+    }
+    if (act === "inviteDel") { await adminCall(`/api/admin/staff/invite/${ds.code}`, "DELETE", null, "staff"); return; }
     if (act === "addZone") { $app.querySelector("[data-zones]").insertAdjacentHTML("beforeend", zoneRow()); const r = $app.querySelectorAll(".zone-row"); r[r.length - 1].querySelector("input").focus(); return; }
     if (act === "delZone") { el.closest(".zone-row").remove(); return; }
     if (act === "photoDel") { el.closest(".photo-tile").remove(); return; }

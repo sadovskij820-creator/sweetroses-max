@@ -246,3 +246,50 @@ test("Telegram build of the same shop: order and transfer work with a Telegram s
   assert.equal(r.data.transfer.amount, 3900 + 400);
   app.server.close();
 });
+
+test("staff: owner invites a manager by a one-time link; manager sees orders, not settings; owner can remove", async () => {
+  const { app, url, sent } = await startApp();
+  app.bot.getUsername = () => "gagulya_flowers_bot";
+  const MAN = asUser(55);
+  // only the owner can invite
+  assert.equal((await req(url + "/api/admin/staff/invite", "POST", {}, MAN)).status, 403);
+  const inv = await req(url + "/api/admin/staff/invite", "POST", {}, ADMIN);
+  assert.equal(inv.status, 200);
+  const m = /\?start=staff_([a-f0-9]{12})$/.exec(inv.data.link);
+  assert.ok(m, inv.data.link);
+  assert.match(inv.data.link, /^https:\/\/max\.ru\/gagulya_flowers_bot\?start=staff_/);
+  // the manager opens the link → «Старт» in the bot
+  const res = app.onBotStart({ id: 55, first_name: "Маша" }, "staff_" + m[1]);
+  assert.match(res.text, /Вы добавлены в сотрудники/);
+  await wait();
+  assert.ok(sent.find((x) => x.chat === "100" && /Маша.*менеджер/.test(x.text)), "owner is told");
+  // one-time: the second use fails
+  assert.match(app.onBotStart({ id: 56, first_name: "Петя" }, "staff_" + m[1]).text, /устарела/);
+  const me = (await req(url + "/api/me", "GET", null, MAN)).data;
+  assert.deepEqual([me.isAdmin, me.isOwner], [true, false]);
+  assert.equal((await req(url + "/api/admin/orders", "GET", null, MAN)).status, 200);
+  assert.equal((await req(url + "/api/admin/settings", "PUT", { phone: "1" }, MAN)).status, 403);
+  assert.equal((await req(url + "/api/admin/staff", "GET", null, MAN)).status, 403);
+  app.store.getCatalog().settings.transfer = TRANSFER;
+  const cat = (await req(url + "/api/admin/catalog", "GET", null, MAN)).data;
+  assert.equal(cat.transferResolved, null);
+  assert.equal(cat.settings.transfer, undefined);
+  // new orders go to the owner and to the manager
+  sent.length = 0;
+  await req(url + "/api/orders", "POST", order(), asUser(7));
+  await wait();
+  assert.ok(sent.find((x) => x.chat === "100" && /Новая заявка/.test(x.text)));
+  assert.ok(sent.find((x) => x.chat === "55" && /Новая заявка/.test(x.text)));
+  // owner turns off notifications for the manager, then removes them
+  await req(url + "/api/admin/staff/55", "PATCH", { notify: false }, ADMIN);
+  sent.length = 0;
+  await req(url + "/api/orders", "POST", order(), asUser(8));
+  await wait();
+  assert.ok(!sent.find((x) => x.chat === "55" && /Новая заявка/.test(x.text)));
+  const del = await req(url + "/api/admin/staff/55", "DELETE", null, ADMIN);
+  assert.equal(del.data.staff.length, 0);
+  assert.equal((await req(url + "/api/admin/orders", "GET", null, MAN)).status, 403);
+  // staff ids never leak into the public catalog
+  assert.doesNotMatch(JSON.stringify((await req(url + "/api/catalog", "GET")).data), /invites|"staff"/);
+  app.server.close();
+});

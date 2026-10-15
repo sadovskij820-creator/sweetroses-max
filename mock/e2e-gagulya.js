@@ -22,7 +22,7 @@ const BRIDGE_STUB = `(function(){
 (async () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gag-e2e-'));
   const sent = [], photos = [];
-  const bot = { sendMessage: async (chat, text) => { sent.push({ chat: String(chat), text }); }, sendPhotos: async (chat, urls, caption) => { photos.push({ chat, urls, caption }); }, setWebAppUrl() {} };
+  const bot = { sendMessage: async (chat, text) => { sent.push({ chat: String(chat), text }); }, sendPhotos: async (chat, urls, caption) => { photos.push({ chat, urls, caption }); }, setWebAppUrl() {}, getUsername: () => 'gagulya_flowers_bot' };
   const app = createApp({ messenger: 'max', botToken: TOKEN, adminIds: '', dataDir, bot, seedFile: path.join(__dirname, '..', 'seed', 'gagulya.seed.json'), log: { error: console.error, log() {} } });
   await new Promise((r) => app.server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${app.server.address().port}`;
@@ -118,12 +118,27 @@ const BRIDGE_STUB = `(function(){
   console.log('product photos after upload:', g2.images);
   console.log('uploaded file served:', (await fetch(base + g2.images[1])).status);
   // owner edits card
-  await p2.goto(base + '/#/admin/loyalty'); await p2.waitForSelector('form[data-form=transfer]');
-  await p2.locator('form[data-form=transfer]').scrollIntoViewIfNeeded(); await snap(p2, '08-admin-transfer');
+  await p2.goto(base + '/#/admin/pay'); await p2.waitForSelector('form[data-form=transfer]');
+  console.log('owner tabs:', (await p2.locator('.admin-tabs .chip').allInnerTexts()).join(' | '));
+  await snap(p2, '08-admin-transfer');
   await p2.fill('[name=tCard]', '5536 9100 0000 0000'); await p2.click('[data-action=tMode][data-m=after]');
   await p2.click('text=Сохранить оплату переводом'); await p2.waitForTimeout(600);
   console.log('transfer saved:', JSON.stringify(app.store.getCatalog().settings.transfer));
 
+  // staff: invite a manager
+  await p2.goto(base + '/#/admin/staff'); await p2.waitForSelector('[data-action=staffInvite]');
+  await p2.click('[data-action=staffInvite]'); await p2.waitForSelector('.src-link');
+  const link = await p2.locator('.src-link').innerText();
+  console.log('invite link:', link);
+  console.log('accept:', app.onBotStart({ id: 55, first_name: 'Маша' }, link.split('start=')[1]).text.trim().split('\n')[0]);
+  await p2.goto(base + '/#/admin/orders'); await p2.goto(base + '/#/admin/staff'); await p2.waitForSelector('[data-action=staffRemove]');
+  await snap(p2, '12-admin-staff');
+  // the manager sees fewer tabs
+  const pm = await page(ctx);
+  await pm.goto(base + '/' + launch(55)); await pm.waitForSelector('.hero');
+  await pm.waitForFunction(() => document.getElementById('topRight').getAttribute('aria-label') === 'Управление', null, { timeout: 5000 });
+  await pm.goto(base + '/#/admin/orders'); await pm.waitForSelector('.admin-tabs');
+  console.log('manager tabs:', (await pm.locator('.admin-tabs .chip').allInnerTexts()).join(' | '));
   // dark theme
   const ctxD = await mk('dark');
   const p3 = await page(ctxD);

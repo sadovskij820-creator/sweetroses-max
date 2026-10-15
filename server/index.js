@@ -129,8 +129,35 @@ function createApp(opts = {}) {
     return null;
   }
   // Admins: ADMIN_IDS from .env plus the "owner" — the first person who sends /start when nobody is admin yet.
-  const adminList = () => [...config.adminIds, ...((store.getCatalog().settings.ownerIds) || []).map(Number)];
+  const ownerList = () => [...config.adminIds, ...((store.getCatalog().settings.ownerIds) || []).map(Number)];
+  /* Staff: managers invited by the owner with a one-time link (settings.staff). They see orders, customers and the catalog;
+     settings, payment details and the staff list stay with the owner. */
+  const staffList = () => (store.getCatalog().settings.staff || []);
+  const adminList = () => [...ownerList(), ...staffList().map((x) => Number(x.id))];
   const isAdmin = (u) => !!u && adminList().includes(Number(u.id));
+  const isOwner = (u) => !!u && ownerList().includes(Number(u.id));
+  /** A link that opens the bot CHAT with /start <param> (the bot itself must see the invite). */
+  function chatLink(param) {
+    const u = bot && bot.getUsername && bot.getUsername();
+    if (!u) return "";
+    return messenger === "max" ? `https://max.ru/${u}?start=${param}` : `https://t.me/${u}?start=${param}`;
+  }
+  function acceptInvite(from, code) {
+    const S = store.getCatalog().settings;
+    const now = Date.now();
+    S.invites = (S.invites || []).filter((x) => new Date(x.expiresAt).getTime() > now);
+    const inv = S.invites.find((x) => x.code === code);
+    if (!inv) { store.setCatalog(store.getCatalog()); return "\n\n⚠️ Ссылка-приглашение уже использована или устарела. Попросите владельца прислать новую."; }
+    S.invites = S.invites.filter((x) => x !== inv);
+    const name = [from.first_name, from.last_name].filter(Boolean).join(" ") || (from.username ? "@" + from.username : "Сотрудник");
+    if (!isAdmin(from)) {
+      S.staff = staffList().concat([{ id: Number(from.id), name, username: from.username || "", role: "manager", notify: true, addedAt: new Date().toISOString() }]);
+    }
+    store.setCatalog(store.getCatalog());
+    const esc = (t) => String(t).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+    for (const oid of ownerList()) sendUser(oid, `👤 <b>${esc(name)}</b> принял(а) приглашение и теперь менеджер: видит заявки и получает их в чат.`).catch(() => {});
+    return `\n\n✅ <b>Вы добавлены в сотрудники ${esc(S.brand || "")}.</b> Заявки будут приходить в этот чат, а в приложении появилась шестерёнка — там заявки, клиенты и товары.`;
+  }
   function claimOwner(from) {
     if (!from || !from.id || adminList().length) return "";
     store.getCatalog().settings.ownerIds = [Number(from.id)];
@@ -139,6 +166,7 @@ function createApp(opts = {}) {
   }
   /** «Начать» in the bot chat: remember the customer (with the link's ref/source), mark the chat as saved. */
   function onBotStart(from, payload = "") {
+    if (from && from.id && /^staff_[a-f0-9]{12}$/.test(payload)) return { text: acceptInvite(from, payload.slice(6)), appPayload: "" };
     const owner = claimOwner(from);
     if (!from || !from.id) return owner;
     const name = [from.first_name, from.last_name].filter(Boolean).join(" ");
@@ -158,7 +186,7 @@ function createApp(opts = {}) {
     const c = store.getCatalog();
     const cats = c.categories.filter((x) => !x.hidden);
     const settings = Object.assign({}, c.settings);
-    delete settings.managerChatIds; delete settings.tildaParts; delete settings.ownerIds; delete settings.webAppUrl;
+    delete settings.managerChatIds; delete settings.tildaParts; delete settings.ownerIds; delete settings.webAppUrl; delete settings.staff; delete settings.invites;
     const L = loyal();
     delete settings.loyalty; delete settings.payments; delete settings.sources; delete settings.transfer;
     return {
@@ -178,7 +206,8 @@ function createApp(opts = {}) {
   async function notify(text) {
     const c = store.getCatalog();
     const ids = new Set([...(c.settings.managerChatIds || []), config.managerChatId].map(String).filter(Boolean));
-    if (!ids.size) ids.add(String(adminList()[0] || ""));
+    if (!ids.size) ids.add(String(ownerList()[0] || ""));
+    for (const x of staffList()) if (x.notify !== false) ids.add(String(x.id));
     const results = [];
     for (const id of ids) {
       if (!id || !bot) continue;
@@ -208,10 +237,10 @@ function createApp(opts = {}) {
   }
 
   const routes = [];
-  const on = (method, pattern, handler, { admin = false, raw = false } = {}) => {
+  const on = (method, pattern, handler, { admin = false, owner = false, raw = false } = {}) => {
     const keys = [];
     const re = new RegExp("^" + pattern.replace(/:(\w+)/g, (_, k) => (keys.push(k), "([^/]+)")) + "$");
-    routes.push({ method, re, keys, handler, admin, raw });
+    routes.push({ method, re, keys, handler, admin: admin || owner, owner, raw });
   };
 
   /* ---------- public ---------- */
@@ -232,7 +261,7 @@ function createApp(opts = {}) {
       if (st.gift && findGift(st.gift)) start.gift = st.gift;
       if (st.paid) start.paid = st.paid;
     }
-    return { isAdmin: isAdmin(user), platform: messenger, startParam: user ? user.startParam || "" : "", start, user: user ? { id: user.id, first_name: user.first_name } : null };
+    return { isAdmin: isAdmin(user), isOwner: isOwner(user), platform: messenger, startParam: user ? user.startParam || "" : "", start, user: user ? { id: user.id, first_name: user.first_name } : null };
   });
 
   /* ---------- profile ---------- */
@@ -466,7 +495,7 @@ function createApp(opts = {}) {
     return out;
   }
 
-  on("GET", "/api/admin/catalog", () => Object.assign({}, store.getCatalog(), { loyaltyResolved: loyal(), paymentsResolved: paySettings(), transferResolved: transferSettings(), env: { yookassa: !!(process.env.YOOKASSA_SHOP_ID && process.env.YOOKASSA_SECRET_KEY) } }), { admin: true });
+  on("GET", "/api/admin/catalog", ({ user }) => Object.assign({}, store.getCatalog(), isOwner(user) ? {} : { settings: Object.assign({}, store.getCatalog().settings, { transfer: undefined, staff: undefined, invites: undefined }) }, { loyaltyResolved: loyal(), paymentsResolved: paySettings(), transferResolved: isOwner(user) ? transferSettings() : null, env: { yookassa: !!(process.env.YOOKASSA_SHOP_ID && process.env.YOOKASSA_SECRET_KEY) } }), { admin: true });
   on("GET", "/api/admin/orders", () => ({ orders: store.getOrders().list.slice(-200).reverse().map((o) => ({ ...o, summary: summaryText(o) })) }), { admin: true });
   on("PATCH", "/api/admin/orders/:id", ({ params, body }) => {
     const o = store.getOrders().list.find((x) => String(x.id) === params.id);
@@ -685,7 +714,44 @@ function createApp(opts = {}) {
     }
     store.setCatalog(store.getCatalog());
     return { ok: true };
-  }, { admin: true });
+  }, { owner: true });
+  /* ---------- admin: staff ---------- */
+  function staffView() {
+    const S = store.getCatalog().settings, cust = custDb().list, now = Date.now();
+    const owners = ownerList().map((id) => { const c = cust[String(id)]; return { id, name: (c && c.name) || "Владелец", username: (c && c.username) || "", role: "owner" }; });
+    return { owners, staff: staffList(), invites: (S.invites || []).filter((x) => new Date(x.expiresAt).getTime() > now).map((x) => ({ code: x.code, expiresAt: x.expiresAt, link: chatLink("staff_" + x.code) })) };
+  }
+  on("GET", "/api/admin/staff", () => staffView(), { owner: true });
+  on("POST", "/api/admin/staff/invite", () => {
+    const S = store.getCatalog().settings;
+    if (!chatLink("x")) throw httpError(400, "Бот ещё не подключён — пригласить не получится");
+    const now = Date.now();
+    S.invites = (S.invites || []).filter((x) => new Date(x.expiresAt).getTime() > now).slice(-9);
+    const inv = { code: crypto.randomBytes(6).toString("hex"), expiresAt: new Date(now + 864e5).toISOString() };
+    S.invites.push(inv); store.setCatalog(store.getCatalog());
+    return Object.assign(staffView(), { link: chatLink("staff_" + inv.code) });
+  }, { owner: true });
+  on("PATCH", "/api/admin/staff/:id", ({ params, body }) => {
+    const x = staffList().find((m) => String(m.id) === params.id);
+    if (!x) throw httpError(404, "Сотрудник не найден");
+    if ("notify" in body) x.notify = !!body.notify;
+    store.setCatalog(store.getCatalog());
+    return staffView();
+  }, { owner: true });
+  on("DELETE", "/api/admin/staff/:id", ({ params }) => {
+    const S = store.getCatalog().settings;
+    if (!staffList().some((m) => String(m.id) === params.id)) throw httpError(404, "Сотрудник не найден");
+    S.staff = staffList().filter((m) => String(m.id) !== params.id);
+    store.setCatalog(store.getCatalog());
+    sendUser(params.id, `Доступ к управлению ${S.brand || "магазином"} закрыт владельцем.`).catch(() => {});
+    return staffView();
+  }, { owner: true });
+  on("DELETE", "/api/admin/staff/invite/:code", ({ params }) => {
+    const S = store.getCatalog().settings;
+    S.invites = (S.invites || []).filter((x) => x.code !== params.code);
+    store.setCatalog(store.getCatalog());
+    return staffView();
+  }, { owner: true });
   on("GET", "/api/admin/stats", () => report(store.getStats(), store.getCatalog()), { admin: true });
   on("POST", "/api/admin/import", async () => {
     const c = store.getCatalog();
@@ -774,6 +840,7 @@ function createApp(opts = {}) {
       const params = Object.fromEntries(route.keys.map((k, i) => [k, decodeURIComponent(m[i + 1])]));
       const user = userFrom(req);
       if (route.admin && !isAdmin(user)) throw httpError(403, "Нет доступа к управлению");
+      if (route.owner && !isOwner(user)) throw httpError(403, "Это может только владелец");
       const body = req.method === "GET" ? {} : route.raw ? await readRaw(req, MAX_UPLOAD) : await readBody(req);
       const ip = (req.headers["x-forwarded-for"] || req.socket.remoteAddress || "").split(",")[0].trim();
       const data = await route.handler({ params, body, user, ip, query: url.searchParams });
