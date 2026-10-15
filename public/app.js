@@ -234,7 +234,7 @@
         <div class="hero-card glass">
           <h1 class="display">${esc(s.banner.title)}</h1>
           <p>${esc(s.banner.text)}</p>
-          <a class="btn block" href="#/catalog/all">Выбрать подарок</a>
+          <a class="btn block" href="#/catalog/all">${esc(s.heroButton || "Выбрать подарок")}</a>
           <div class="hero-meta">${chips.map((x) => `<span class="chip-note">${esc(x)}</span>`).join("")}</div>
         </div>
       </section>
@@ -714,7 +714,7 @@
         <details style="margin-top:8px"><summary class="muted" style="font-size:13px">Добавить фото по ссылке</summary>
           <div style="display:flex;gap:8px;margin-top:8px"><input class="input" data-photo-link placeholder="https://…" style="min-height:42px"><button type="button" class="btn soft small" data-action="addPhotoLink">Добавить</button></div></details>
       </div>
-      <label class="field"><span>Сколько видов шоколада можно выбрать (0 — без выбора)</span><input class="input" name="chocolateChoices" type="number" min="0" max="6" value="${p.chocolateChoices || 0}"></label>
+      ${(d.chocolates || []).length ? `<label class="field"><span>Сколько видов шоколада можно выбрать (0 — без выбора)</span><input class="input" name="chocolateChoices" type="number" min="0" max="6" value="${p.chocolateChoices || 0}"></label>` : `<input type="hidden" name="chocolateChoices" value="0">`}
       <div class="field"><span>Категории</span>${d.categories.map((c) => `<label class="check" style="margin-top:8px;color:var(--text)"><input type="checkbox" name="cats" value="${esc(c.id)}" ${p.cats.includes(c.id) ? "checked" : ""}>${esc(c.title)}</label>`).join("")}</div>
       <label class="check" style="color:var(--text)"><input type="checkbox" name="hidden" ${p.hidden ? "checked" : ""}>Скрыть из каталога</label>
       <button class="btn block" style="margin-top:18px" type="submit">${isNew ? "Создать товар" : "Сохранить изменения"}</button>
@@ -801,11 +801,11 @@
         <label class="btn soft small" style="justify-self:start"><input type="file" accept="image/*" hidden data-upload-to="banner.image">Загрузить из галереи</label></div>
         <input type="hidden" name="banner.image" value="${esc(s.banner.image)}"></div>
       <label class="field"><span>Телефон</span><input class="input" name="phone" value="${esc(s.phone)}"></label>
-      <label class="field"><span>Адрес мастерской</span><input class="input" name="address" value="${esc(s.address)}"></label>
+      <label class="field"><span>Адрес</span><input class="input" name="address" value="${esc(s.address)}"></label>
       <label class="field"><span>Режим работы</span><input class="input" name="hours" value="${esc(s.hours)}"></label>
       <label class="field"><span>Время готовности (через запятую)</span><input class="input" name="timeSlots" value="${esc(s.timeSlots.join(", "))}"></label>
       <label class="field"><span>Куда присылать заявки — ID в ${HOST_NAME} через запятую</span><input class="input" name="managerChatIds" value="${esc((s.managerChatIds || []).join(", "))}" placeholder="Напишите боту /id, чтобы узнать свой ID"></label>
-      <label class="field"><span>О мастерской (каждый абзац с новой строки)</span><textarea class="input" name="about" style="min-height:120px">${esc(s.about.join("\n"))}</textarea></label>
+      <label class="field"><span>${esc(s.aboutLabel || "О мастерской")} (каждый абзац с новой строки)</span><textarea class="input" name="about" style="min-height:120px">${esc(s.about.join("\n"))}</textarea></label>
       <label class="field"><span>Доставка и оплата (каждый пункт с новой строки)</span><textarea class="input" name="delivery" style="min-height:120px">${esc(s.delivery.join("\n"))}</textarea></label>
       <label class="field"><span>Текст после отправки заявки</span><textarea class="input" name="successText">${esc(s.successText)}</textarea></label>
       <button class="btn block" type="submit" style="margin-top:16px">Сохранить настройки</button>
@@ -1105,7 +1105,7 @@
     }
     if (act === "shareRef" || act === "copyRef") {
       const link = state.profile.refLink, L = LOY();
-      const text = `Дарю ${L.referral.friendBonus} бонусов на первый заказ в ${state.catalog.settings.brand} 🍓`;
+      const text = `Дарю ${L.referral.friendBonus} бонусов на первый заказ в ${state.catalog.settings.brand} ${state.catalog.settings.emoji || "🍓"}`;
       if (act === "shareRef") {
         try {
           if (mx && mx.shareMaxContent) { await mx.shareMaxContent({ text, link }); return; }
@@ -1136,7 +1136,7 @@
     }
     if (act === "shareProduct") {
       const p = productById(ds.id);
-      return shareLink(`Смотри, какая красота: «${p.title}» в ${state.catalog.settings.brand} 🍓`, appLink("p_" + p.id));
+      return shareLink(`Смотри, какая красота: «${p.title}» в ${state.catalog.settings.brand} ${state.catalog.settings.emoji || "🍓"}`, appLink("p_" + p.id));
     }
     if (act === "sendGift") {
       const link = ds.link || state.lastGiftLink;
@@ -1422,6 +1422,9 @@
       mono.innerHTML = LOGO_MARKS[S.logoMark] || `${esc(S.monogram[0])}<i></i>${esc(S.monogram[1])}`;
       mono.setAttribute("aria-label", S.brand + " — на главную");
     }
+    // flower shops: a flower instead of the strawberry on the «Каталог» tab
+    const catTab = document.querySelector('.tab[data-tab="catalog"] svg');
+    if (S.catalogIcon === "flower" && catTab) catTab.innerHTML = '<path d="M7 4.5l2.5 2L12 3.5l2.5 3 2.5-2V9a5 5 0 0 1-10 0z"/><path d="M12 14v7M12 18.5c-1.8-2-4-2.2-5-1.6 1.4 1.5 3.4 2.1 5 1.6M12 17c1.4-1.6 3.4-1.8 4.4-1.3-1.2 1.3-2.9 1.8-4.4 1.3"/>';
     const tel = S.phone.replace(/[^\d+]/g, "");
     document.getElementById("topLeft").href = "tel:" + tel;
     updateBadge();
