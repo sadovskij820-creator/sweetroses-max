@@ -1,5 +1,10 @@
 /* Sweet Roses — mini app for MAX and Telegram (vanilla JS, no build step) */
-(function () {
+// starts once the messenger bridge has loaded (or failed / timed out) — see index.html
+(window.__bridgeReady || Promise.resolve()).then(function () {
+  if (!(window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initData !== undefined) && window.__tgStandIn) {
+    const st = window.__tgStandIn();
+    if (st) { window.Telegram = window.Telegram || {}; window.Telegram.WebApp = st; }
+  }
   "use strict";
 
   // Host messenger. MAX's script creates window.WebApp even outside MAX, so only a non-empty initData means "inside MAX".
@@ -1434,4 +1439,4 @@
     render();
   }
   boot();
-})();
+});

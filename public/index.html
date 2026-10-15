@@ -8,31 +8,51 @@
   <link rel="stylesheet" href="fonts/fonts.css">
   <link rel="stylesheet" href="styles.css">
   <script>
-    // Load the bridge of the messenger that opened us: MAX puts #WebAppData=..., Telegram puts #tgWebAppData=...
+    // The messenger's bridge script is loaded WITHOUT blocking the page: on some mobile networks telegram.org hangs,
+    // and a blocking script would leave the app on Telegram's loading bar forever. The app starts when the bridge
+    // has loaded, failed, or after a short wait — then, for Telegram, a small built-in stand-in is used.
     (function () {
       var h = location.hash + location.search;
       var isMax = /WebAppData=/.test(h) && !/tgWebAppData=/.test(h);
-      document.write('<script src="' + (isMax ? "https://st.max.ru/js/max-web-app.js" : "https://telegram.org/js/telegram-web-app.js") + '"><\/script>');
-    })();
-  </script>
-  <script>
-    // If telegram.org did not load (some mobile networks), read the launch data Telegram puts in the address ourselves,
-    // so the shop still opens with the customer's profile; buttons that need Telegram itself just do nothing.
-    (function () {
-      if (window.Telegram && window.Telegram.WebApp) return;
-      var m = /[#&]tgWebAppData=([^&]*)/.exec(location.hash);
-      if (!m) return;
-      var raw = decodeURIComponent(m[1]), user = null;
-      try { user = JSON.parse(new URLSearchParams(raw).get("user")); } catch (e) {}
-      var noop = function () {};
-      var dark = /bg_color%22%3A%22%23[0-3]/i.test(location.hash) || /tgWebAppThemeParams=.*bg_color.*%23[0-3]/i.test(location.hash);
-      window.Telegram = { WebApp: {
-        initData: raw, initDataUnsafe: { user: user }, colorScheme: dark ? "dark" : "light", platform: "unknown",
-        ready: noop, expand: noop, onEvent: noop, setHeaderColor: noop, setBackgroundColor: noop,
-        BackButton: { show: noop, hide: noop, onClick: noop }, HapticFeedback: { impactOccurred: noop, notificationOccurred: noop },
-        openLink: function (u) { window.open(u, "_blank"); }, openTelegramLink: function (u) { window.open(u, "_blank"); },
-        showConfirm: function (q, cb) { cb(window.confirm(q)); }
-      } };
+      window.__bridgeReady = new Promise(function (resolve) {
+        var done = false, fin = function () { if (!done) { done = true; resolve(); } };
+        var s = document.createElement("script");
+        s.src = isMax ? "https://st.max.ru/js/max-web-app.js" : "https://telegram.org/js/telegram-web-app.js";
+        s.async = true; s.onload = fin; s.onerror = fin;
+        document.head.appendChild(s);
+        setTimeout(fin, isMax ? 5000 : 2500);
+      });
+      // Stand-in for telegram-web-app.js: launch data from the address, events to Telegram the same way the real script sends them.
+      window.__tgStandIn = function () {
+        var m = /[#&]tgWebAppData=([^&]*)/.exec(location.hash);
+        if (!m) return null;
+        var raw = decodeURIComponent(m[1]), user = null, theme = {};
+        try { user = JSON.parse(new URLSearchParams(raw).get("user")); } catch (e) {}
+        try { var t = /[#&]tgWebAppThemeParams=([^&]*)/.exec(location.hash); if (t) theme = JSON.parse(decodeURIComponent(t[1])); } catch (e) {}
+        var post = function (type, data) {
+          try {
+            if (window.TelegramWebviewProxy) return window.TelegramWebviewProxy.postEvent(type, JSON.stringify(data || {}));
+            if (window.external && "notify" in window.external) return window.external.notify(JSON.stringify({ eventType: type, eventData: data || {} }));
+            window.parent.postMessage(JSON.stringify({ eventType: type, eventData: data || {} }), "*");
+          } catch (e) {}
+        };
+        var backCbs = [];
+        window.Telegram = window.Telegram || {};
+        window.Telegram.WebView = { receiveEvent: function (type) { if (type === "back_button_pressed") backCbs.forEach(function (f) { f(); }); } };
+        window.TelegramGameProxy = { receiveEvent: window.Telegram.WebView.receiveEvent };
+        var bg = String(theme.bg_color || "#ffffff").replace("#", ""), lum = parseInt(bg.slice(0, 2), 16) + parseInt(bg.slice(2, 4), 16) + parseInt(bg.slice(4, 6), 16);
+        var noop = function () {};
+        return {
+          initData: raw, initDataUnsafe: { user: user }, colorScheme: lum < 384 ? "dark" : "light", platform: "unknown", standIn: true,
+          ready: function () { post("web_app_ready"); }, expand: function () { post("web_app_expand"); },
+          onEvent: noop, setHeaderColor: noop, setBackgroundColor: noop,
+          BackButton: { show: function () { post("web_app_setup_back_button", { is_visible: true }); }, hide: function () { post("web_app_setup_back_button", { is_visible: false }); }, onClick: function (f) { backCbs.push(f); } },
+          HapticFeedback: { impactOccurred: function (s) { post("web_app_trigger_haptic_feedback", { type: "impact", impact_style: s || "light" }); }, notificationOccurred: function (s) { post("web_app_trigger_haptic_feedback", { type: "notification", notification_type: s }); } },
+          openLink: function (u) { post("web_app_open_link", { url: u }); },
+          openTelegramLink: function (u) { var x = new URL(u); post("web_app_open_tg_link", { path_full: x.pathname + x.search }); },
+          showConfirm: function (q, cb) { cb(window.confirm(q)); }
+        };
+      };
     })();
   </script>
 </head>
