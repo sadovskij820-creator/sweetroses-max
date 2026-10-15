@@ -85,9 +85,11 @@ function createBot({ token, webAppUrl, log = console }) {
           if (m.text.startsWith("/start")) {
             const res = (hooks.onStart && hooks.onStart(m.from || {}, m.text.slice(6).trim().replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64))) || "";
             const extra = typeof res === "string" ? res : res.text || "";
-            await sendMessage(chatId,
-              "Здравствуйте! Это <b>Sweet Roses</b> — мастерская клубники в шоколаде в Иркутске 🍓\n\nНажмите кнопку ниже, чтобы выбрать подарок и оставить заявку. Менеджер перезвонит в течение 10 минут (ежедневно 10:00–20:00)." + extra,
-              currentUrl ? { reply_markup: openButton("Открыть каталог") } : {}).catch((e) => log.error(e.message));
+            // the shop's own greeting from its settings (botGreeting), like in MAX
+            const greet = (typeof res === "object" && res.greeting) || (hooks.greeting && hooks.greeting()) ||
+              "Здравствуйте! Это <b>Sweet Roses</b> — мастерская клубники в шоколаде в Иркутске 🍓\n\nНажмите кнопку ниже, чтобы выбрать подарок и оставить заявку. Менеджер перезвонит в течение 10 минут (ежедневно 10:00–20:00).";
+            const btn = (typeof res === "object" && res.button) || "Открыть каталог";
+            await sendMessage(chatId, greet + extra, currentUrl ? { reply_markup: openButton(btn) } : {}).catch((e) => log.error(e.message));
           } else if (m.text.startsWith("/id")) {
             const admin = hooks.isAdmin && hooks.isAdmin(m.from && m.from.id);
             await sendMessage(chatId, `ID этого чата: <code>${chatId}</code>${admin ? "\n\nВставьте его в «Управление → Настройки → Куда присылать заявки»." : ""}`).catch((e) => log.error(e.message));
