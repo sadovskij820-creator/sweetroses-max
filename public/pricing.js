@@ -15,7 +15,8 @@
 
   /**
    * cart: { lines: [{ id, qty, choc: [] }], addons: { [addonId]: qty }, cardText }
-   * opts: { promoCode, isFirstOrder }  (isFirstOrder undefined = unknown → assume eligible)
+   * opts: { promoCode, isFirstOrder, method, zoneId }  (isFirstOrder undefined = unknown → assume eligible)
+   * Delivery zones (catalog.settings.zones) are set by the owner; when there are none, delivery is priced by the manager.
    */
   function computeTotals(catalog, cart, opts) {
     opts = opts || {};
@@ -52,12 +53,37 @@
         discount = Math.round((subtotal * p.percent) / 100);
       }
     }
-    return { lines, addons, subtotal, discount, total: subtotal - discount, promo, promoError, errors };
+    const goods = subtotal - discount;
+    const zones = activeZones(catalog);
+    let delivery = null, deliveryError = null;
+    if (opts.method === "delivery" && zones.length) {
+      const z = zones.find((x) => String(x.id) === String(opts.zoneId || ""));
+      if (!z) deliveryError = "Выберите район доставки";
+      else {
+        const free = !!(z.freeFrom && goods >= z.freeFrom);
+        delivery = { zoneId: z.id, title: z.name, price: free ? 0 : z.price || 0, free, from: z.from || 0, to: z.to || 0 };
+      }
+    }
+    return { lines, addons, subtotal, discount, goods, delivery, deliveryError, total: goods + (delivery ? delivery.price : 0), promo, promoError, errors };
+  }
+
+  function activeZones(catalog) {
+    return (((catalog && catalog.settings) || {}).zones || []).filter((z) => z && z.name && !z.hidden);
+  }
+  /** "40–60 мин", "до 2 ч", "1–1,5 ч" — human text for a zone's delivery time range (minutes). */
+  function zoneTime(z) {
+    const lo = z.from || 0, hi = z.to || 0;
+    const top = Math.max(lo, hi);
+    if (!top) return "";
+    const hours = top > 90 && lo % 30 === 0 && hi % 30 === 0;
+    const n = (m) => (hours ? String(m / 60).replace(".", ",") : String(m));
+    const unit = hours ? " ч" : " мин";
+    return lo && hi && hi > lo ? n(lo) + "–" + n(hi) + unit : "до " + n(top) + unit;
   }
 
   function formatRub(n) {
     return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " ₽";
   }
 
-  return { computeTotals, findPromo, normCode, formatRub };
+  return { computeTotals, findPromo, normCode, formatRub, activeZones, zoneTime };
 });

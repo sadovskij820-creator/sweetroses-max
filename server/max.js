@@ -114,6 +114,15 @@ function createBot({ token, request, log = console, buttonText = "Открыть
     return call("POST", `/messages?${q}&disable_link_preview=true`, body);
   }
 
+  /** Photos of an order: one message with image attachments taken by public URL. */
+  async function sendPhotos(id, urls, caption) {
+    urls = (urls || []).slice(0, 10);
+    if (!urls.length) return null;
+    const n = String(id).trim();
+    const q = Number(n) < 0 ? `chat_id=${encodeURIComponent(n)}` : `user_id=${encodeURIComponent(n)}`;
+    return call("POST", `/messages?${q}`, { text: String(caption || "").slice(0, 4000), attachments: urls.map((url) => ({ type: "image", payload: { url } })) });
+  }
+
   async function handle(u, hooks) {
     let from = null, text = "", payload = "";
     if (u.update_type === "bot_started") { from = u.user; text = "/start"; payload = u.payload || ""; }
@@ -159,7 +168,7 @@ function createBot({ token, request, log = console, buttonText = "Открыть
   function stop() { running = false; }
 
   return {
-    call, me, sendMessage, startPolling, stop, openButton,
+    call, me, sendMessage, sendPhotos, startPolling, stop, openButton,
     // In MAX the mini app address is set in the partner cabinet (bot settings), not via API.
     setWebAppUrl(url) { currentUrl = url || currentUrl; },
     getWebAppUrl: () => currentUrl,

@@ -11,10 +11,15 @@ idx = rd('server/index.js')
 idx = idx.replace('require("../public/pricing.js")', 'require("./pricing.js")').replace('require("./vendor/qrcode.js")', 'require("./qrcode.js")')
 idx = idx.replace('path.join(__dirname, "..", ".env")', 'path.join(__dirname, ".env")')
 idx = idx.replace('publicDir: path.join(__dirname, "..", "public")', 'publicDir: __dirname')
-idx = idx.replace('seedFile: path.join(__dirname, "..", "seed", "catalog.seed.json")', 'seedFile: path.join(__dirname, "catalog.seed.json")')
+import re as _re
+idx, n = _re.subn(r'seedFile: opts\.seedFile \?\? path\.join\(__dirname, "\.\.", "seed", .*?\),\n', 'seedFile: opts.seedFile ?? path.join(__dirname, "catalog.seed.json"),\n', idx)
+assert n == 1, "seedFile line not found"
 idx = idx.replace('path.join(__dirname, "..", "data")', 'path.join(__dirname, "data")')
 # only browser files may be served from the flat folder
-idx = idx.replace('    if (!file.startsWith(config.publicDir) ||', '    if (!/^\\/(index\\.html|app\\.js|pricing\\.js|styles\\.css|fonts\\.css|[a-z0-9-]+\\.woff2)$/.test(rel) || !file.startsWith(config.publicDir) ||')
+idx = idx.replace('    if (!file.startsWith(config.publicDir) ||', '    if (!/^\\/(index\\.html|app\\.js|pricing\\.js|styles\\.css|fonts\\.css|[a-z0-9-]+\\.woff2|demo-[a-z0-9-]+\\.jpg)$/.test(rel) || !file.startsWith(config.publicDir) ||')
+# demo pictures (/demo/x.jpg) lie next to index.js as demo-x.jpg
+idx = idx.replace('    if (rel === "/" || rel === "") rel = "/index.html";', '    if (rel === "/" || rel === "") rel = "/index.html";\n    rel = rel.replace(/^\\/demo\\/([a-z0-9-]+\\.jpg)$/, "/demo-$1");')
+assert 'demo-$1' in idx
 assert 'index\\.html|app' in idx and 'publicDir: __dirname' in idx and '"./pricing.js"' in idx
 wr('index.js', idx)
 for f in ['app.js', 'pricing.js', 'styles.css']: wr(f, rd('public/' + f))
@@ -22,7 +27,11 @@ wr('index.html', rd('public/index.html').replace('href="fonts/fonts.css"', 'href
 wr('fonts.css', rd('public/fonts/fonts.css'))
 for f in os.listdir(os.path.join(src, 'public/fonts')):
     if f.endswith('.woff2'): shutil.copy(os.path.join(src, 'public/fonts', f), out)
-seed = json.loads(rd('seed/catalog.seed.json')); seed['settings']['ownerIds'] = [int(x) for x in os.environ.get('OWNER_IDS', '').split(',') if x]
+SEED = os.environ.get('SEED', 'catalog')  # SEED=gagulya → shop Gagulya Flowers
+seed = json.loads(rd('seed/' + SEED + '.seed.json'))
+if os.path.isdir(os.path.join(src, 'public/demo')) and SEED != 'catalog':
+    for f in os.listdir(os.path.join(src, 'public/demo')): shutil.copy(os.path.join(src, 'public/demo', f), os.path.join(out, 'demo-' + f))
+seed['settings']['ownerIds'] = [int(x) for x in os.environ.get('OWNER_IDS', '').split(',') if x]
 if os.path.exists(os.path.join(src, 'certs')):
     for f in os.listdir(os.path.join(src, 'certs')): shutil.copy(os.path.join(src, 'certs', f), out)
 json.dump(seed, open(os.path.join(out, 'catalog.seed.json'), 'w', encoding='utf-8'), ensure_ascii=False)

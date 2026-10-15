@@ -107,11 +107,16 @@
     const p = visibleProducts().find((x) => x.cats.includes(catId));
     return p ? p.images[0] : "";
   }
-  function totals() {
+  function totals(co) {
     // Promo codes are verified by the server (/api/promo); here we only apply the confirmed percent for display.
     const promos = state.promo.percent ? [{ code: state.promo.code, percent: state.promo.percent, active: true }] : [];
-    return P.computeTotals(Object.assign({}, state.catalog, { promos }), state.cart, { promoCode: state.promo.percent ? state.promo.code : "" });
+    const d = co ? { method: co.method, zoneId: co.zoneId } : {};
+    return P.computeTotals(Object.assign({}, state.catalog, { promos }), state.cart, Object.assign({ promoCode: state.promo.percent ? state.promo.code : "" }, d));
   }
+  const zones = () => P.activeZones(state.catalog);
+  const zoneById = (id) => zones().find((z) => String(z.id) === String(id || ""));
+  const transferOn = () => !!(state.catalog.transfer && state.catalog.transfer.enabled && host);
+  const transferNow = () => transferOn() && state.catalog.transfer.mode !== "after";
   function cartCount() { return state.cart.lines.reduce((s, l) => s + l.qty, 0); }
   function updateBadge() {
     const b = document.getElementById("cartBadge");
@@ -214,18 +219,19 @@
 
   function viewHome() {
     const s = state.catalog.settings;
-    const top = visibleProducts().filter((p) => p.cats.includes("top")).slice(0, 6);
-    const boxes = visibleProducts().filter((p) => p.cats.includes("chocolate")).slice(0, 6);
+    // the home page sections and chips come from the shop's settings (defaults = Sweet Roses)
+    const sections = s.homeSections || [{ cat: "top", title: "Готовые подарки", more: "Все готовые подарки" }, { cat: "chocolate", title: "Боксы с клубникой", more: "Все боксы" }];
+    const chips = s.heroChips || ["Доставка от 1 часа", "Производство по ГОСТу"];
     return `<div class="page">
       ${s.demoNote ? `<div class="demo-note">${esc(s.demoNote)}</div>` : ""}
       ${homeExtras()}
       <section class="hero">
-        ${imgTag(s.banner.image, 900, "Клубника в шоколаде Sweet Roses", 'loading="eager"')}
+        ${imgTag(s.banner.image, 900, s.tagline + " " + s.brand, 'loading="eager"')}
         <div class="hero-card glass">
           <h1 class="display">${esc(s.banner.title)}</h1>
           <p>${esc(s.banner.text)}</p>
           <a class="btn block" href="#/catalog/all">Выбрать подарок</a>
-          <div class="hero-meta"><span class="chip-note">Доставка от 1 часа</span><span class="chip-note">Производство по ГОСТу</span></div>
+          <div class="hero-meta">${chips.map((x) => `<span class="chip-note">${esc(x)}</span>`).join("")}</div>
         </div>
       </section>
 
@@ -234,11 +240,11 @@
         ${visibleCats().map((c) => `<a class="cat-tile" href="#/catalog/${esc(c.id)}"><div class="ph">${imgTag(catCover(c.id), 240, "")}</div><span>${esc(c.title)}</span></a>`).join("")}
       </div>
 
-      ${top.length ? `<h2 class="h2">Готовые подарки</h2><div class="grid">${top.map(productCard).join("")}</div>
-      <a class="btn soft block" style="margin-top:16px" href="#/catalog/top">Все готовые подарки</a>` : ""}
-
-      ${boxes.length ? `<h2 class="h2">Боксы с клубникой</h2><div class="grid">${boxes.map(productCard).join("")}</div>
-      <a class="btn soft block" style="margin-top:16px" href="#/catalog/chocolate">Все боксы</a>` : ""}
+      ${sections.map((sec) => {
+        const list = visibleProducts().filter((p) => p.cats.includes(sec.cat)).slice(0, 6);
+        return list.length ? `<h2 class="h2">${esc(sec.title)}</h2><div class="grid">${list.map(productCard).join("")}</div>
+      <a class="btn soft block" style="margin-top:16px" href="#/catalog/${esc(sec.cat)}">${esc(sec.more || "Смотреть все")}</a>` : "";
+      }).join("")}
     </div>`;
   }
 
@@ -295,7 +301,7 @@
 
   function viewCart() {
     if (!state.cart.lines.length) {
-      return `<div class="page empty"><h1 class="display">Корзина пуста</h1><p>Загляните в каталог: там боксы, букеты и наборы с клубникой в шоколаде.</p><a class="btn" href="#/catalog/all">Открыть каталог</a></div>`;
+      return `<div class="page empty"><h1 class="display">Корзина пуста</h1><p>${esc(state.catalog.settings.emptyCartText || "Загляните в каталог: там боксы, букеты и наборы с клубникой в шоколаде.")}</p><a class="btn" href="#/catalog/all">Открыть каталог</a></div>`;
     }
     const t = totals();
     const addons = state.catalog.addons.filter((a) => !a.hidden);
@@ -328,7 +334,7 @@
       <div class="summary">
         <div class="r"><span>Товары и допы</span><span class="price">${rub(t.subtotal)}</span></div>
         ${t.discount ? `<div class="r"><span>Скидка ${t.promo.percent}%</span><span class="price">−${rub(t.discount)}</span></div>` : ""}
-        <div class="r"><span>Доставка</span><span class="muted">рассчитает менеджер</span></div>
+        <div class="r"><span>Доставка</span><span class="muted">${zones().length ? "по району — при оформлении" : "рассчитает менеджер"}</span></div>
         <div class="r total"><span>Итого</span><span class="price">${rub(t.total)}</span></div>
       </div>
       <a class="btn block" style="margin-top:16px" href="#/checkout">Оформить заказ</a>
@@ -342,23 +348,39 @@
     state.checkout = {
       name: saved.name || (u ? [u.first_name, u.last_name].filter(Boolean).join(" ") : ""),
       phone: saved.phone || "",
-      date: todayISO(0), time: "", method: "pickup", address: saved.address || "", comment: "", consent: false, errors: {}, sending: false,
+      date: todayISO(0), time: "", method: "pickup", address: saved.address || "", zoneId: saved.zoneId && zoneById(saved.zoneId) ? saved.zoneId : "", comment: "", consent: false, errors: {}, sending: false,
       useBonus: false, marketing: !!(state.profile && state.profile.consent),
     };
     return state.checkout;
   }
-  function slotsFor(date) {
+  /** Minutes we need before a slot: the zone's delivery time (the "to" end of the range), otherwise one hour. */
+  function leadMinutes(c) {
+    const z = c && c.method === "delivery" ? zoneById(c.zoneId) : null;
+    return z ? z.to || z.from || 60 : 60;
+  }
+  function slotsFor(date, c) {
     const slots = state.catalog.settings.timeSlots;
     const isToday = date === todayISO(0);
-    const now = nowMinutesTZ();
-    return slots.map((s) => ({ s, disabled: isToday && toMin(s) < now + 60 }));
+    const now = nowMinutesTZ(), lead = leadMinutes(c);
+    return slots.map((s) => ({ s, disabled: isToday && toMin(s) < now + lead }));
+  }
+  function zonePicker(c, e) {
+    const zs = zones();
+    if (!zs.length) return "";
+    const z = zoneById(c.zoneId);
+    return `<div class="field"><span>Район доставки</span>
+      <div class="zones">${zs.map((x) => `<button class="zone" data-action="zone" data-id="${esc(x.id)}" aria-pressed="${String(x.id) === String(c.zoneId)}">
+        <b>${esc(x.name)}</b><span>${x.price ? rub(x.price) : "бесплатно"}${P.zoneTime(x) ? " · " + P.zoneTime(x) : ""}</span>${x.freeFrom && x.price ? `<small>бесплатно от ${rub(x.freeFrom)}</small>` : ""}</button>`).join("")}</div>
+      ${e.zone ? `<div class="err">${e.zone}</div>` : ""}
+      ${z && P.zoneTime(z) ? `<div class="muted" style="font-size:13px;margin-top:8px">Привезём за ${P.zoneTime(z)} после готовности. Время ниже показываем только то, к которому успеем.</div>` : ""}</div>`;
   }
   function viewCheckout() {
     if (!state.cart.lines.length) { location.hash = "#/cart"; return ""; }
     const c = initCheckout();
-    const t = totals();
+    const t = totals(c);
     const e = c.errors;
-    const slots = slotsFor(c.date);
+    const slots = slotsFor(c.date, c);
+    const zs = zones();
     return `<div class="page">
       <h1 class="display" style="font-size:36px;margin-top:8px">Оформление</h1>
       <label class="field"><span>Ваше имя</span><input class="input ${e.name ? "invalid" : ""}" data-input="co.name" value="${esc(c.name)}" autocomplete="name">${e.name ? `<div class="err">${e.name}</div>` : ""}</label>
@@ -367,8 +389,9 @@
 
       <div class="field"><span>Как получить</span>
         <div class="seg"><button data-action="method" data-m="pickup" aria-pressed="${c.method === "pickup"}">Самовывоз</button><button data-action="method" data-m="delivery" aria-pressed="${c.method === "delivery"}">Доставка</button></div>
-        <div class="muted" style="font-size:13px;margin-top:8px">${c.method === "pickup" ? esc(state.catalog.settings.address) + ", " + esc(state.catalog.settings.hours.toLowerCase()) : "Курьер по тарифу такси. Стоимость менеджер назовёт при подтверждении."}</div>
+        <div class="muted" style="font-size:13px;margin-top:8px">${c.method === "pickup" ? esc(state.catalog.settings.address) + ", " + esc(state.catalog.settings.hours.toLowerCase()) : zs.length ? "Выберите район — цена доставки сразу добавится к заказу." : "Курьер по тарифу такси. Стоимость менеджер назовёт при подтверждении."}</div>
       </div>
+      ${c.method === "delivery" ? zonePicker(c, e) : ""}
       ${c.method === "delivery" ? `<label class="field"><span>Адрес доставки</span><input class="input ${e.address ? "invalid" : ""}" data-input="co.address" value="${esc(c.address)}" placeholder="Улица, дом, квартира, подъезд" autocomplete="street-address">${e.address ? `<div class="err">${e.address}</div>` : ""}</label>` : ""}
 
       <label class="field"><span>Дата готовности</span><input class="input" type="date" data-input="co.date" value="${esc(c.date)}" min="${todayISO(0)}" max="${todayISO(60)}"></label>
@@ -388,22 +411,24 @@
         ${t.lines.map((l) => `<div class="r"><span>${esc(l.title)} × ${l.qty}</span><span class="price">${rub(l.sum)}</span></div>`).join("")}
         ${t.addons.map((a) => `<div class="r"><span>${esc(a.title)} × ${a.qty}</span><span class="price">${rub(a.sum)}</span></div>`).join("")}
         ${t.discount ? `<div class="r"><span>Скидка ${t.promo.percent}%</span><span class="price">−${rub(t.discount)}</span></div>` : ""}
+        ${t.delivery ? `<div class="r"><span>Доставка · ${esc(t.delivery.title)}</span><span class="price">${t.delivery.free ? "бесплатно" : rub(t.delivery.price)}</span></div>` : ""}
         ${usableBonus(t) && c.useBonus ? `<div class="r"><span>Бонусами</span><span class="price">−${rub(usableBonus(t))}</span></div>` : ""}
-        <div class="r total"><span>${payOnline() ? "К оплате" : "Итого"}${c.method === "delivery" ? " без доставки" : ""}</span><span class="price">${rub(t.total - (c.useBonus ? usableBonus(t) : 0))}</span></div>
+        <div class="r total"><span>${payOnline() || transferNow() ? "К оплате" : "Итого"}${c.method === "delivery" && !t.delivery ? " без доставки" : ""}</span><span class="price">${rub(t.total - (c.useBonus ? usableBonus(t) : 0))}</span></div>
       </div>
       <label class="check"><input type="checkbox" data-input="co.consent" ${c.consent ? "checked" : ""}><span>Согласен(на) на обработку персональных данных для оформления заказа</span></label>
       ${feat("broadcasts") && host ? `<label class="check"><input type="checkbox" data-input="co.marketing" ${c.marketing ? "checked" : ""}><span>Присылать акции, напоминания о датах и бонусах</span></label>` : ""}
       ${e.consent ? `<div class="err">${e.consent}</div>` : ""}
       ${e.form ? `<div class="err" style="margin-top:10px">${esc(e.form)}</div>` : ""}
-      <button class="btn block" style="margin-top:16px" data-action="submitOrder" ${c.sending ? "disabled" : ""}>${c.sending ? "Отправляем…" : payOnline() ? "Перейти к оплате" : "Отправить заявку"}</button>
-      <p class="muted" style="font-size:12.5px;text-align:center;margin:10px 0 0">${payOnline() ? "Оплата картой или по СБП. Заказ подтвердим сразу после оплаты." : "Оплата после звонка менеджера. Заказ готовим после 100% предоплаты."}</p>
+      <button class="btn block" style="margin-top:16px" data-action="submitOrder" ${c.sending ? "disabled" : ""}>${c.sending ? "Отправляем…" : payOnline() || transferNow() ? "Перейти к оплате" : "Отправить заявку"}</button>
+      <p class="muted" style="font-size:12.5px;text-align:center;margin:10px 0 0">${payOnline() ? "Оплата картой или по СБП. Заказ подтвердим сразу после оплаты." : transferNow() ? "Оплата переводом на карту или по СБП — реквизиты на следующем шаге. Можно оплатить в любое время, даже ночью." : transferOn() ? "Оплата переводом после подтверждения: менеджер пришлёт реквизиты в чат." : "Оплата после звонка менеджера. Заказ готовим после 100% предоплаты."}</p>
     </div>`;
   }
 
   function usableBonus(t) {
     const p = state.profile;
     if (!feat("bonuses") || !p || !p.balance) return 0;
-    return Math.max(0, Math.min(p.balance, Math.floor((t.total * (LOY().maxPayPercent || 0)) / 100)));
+    const base = t.total - (t.delivery ? t.delivery.price : 0);
+    return Math.max(0, Math.min(p.balance, Math.floor((base * (LOY().maxPayPercent || 0)) / 100)));
   }
   const payOnline = () => !!(state.catalog.payments && state.catalog.payments.enabled && host);
   function bonusBox(t, c) {
@@ -420,6 +445,8 @@
       <div class="success-mark"><svg viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg></div>
       <h1 class="display">${paid ? `Заказ №${esc(id)} оплачен` : `Заявка №${esc(id)} отправлена`}</h1>
       <p style="max-width:34ch;margin:12px auto 22px">${paid ? "Спасибо! Оплата получена — мы уже начали готовить ваш заказ." : esc(state.catalog.settings.successText)}</p>
+      ${query && query.claimed ? `<div class="info-card" style="text-align:left;margin:0 0 18px"><p><b>💳 Спасибо за оплату!</b></p><p class="muted" style="font-size:13.5px;margin-top:6px">Менеджер проверит поступление и подтвердит заказ — сообщение придёт в чат.</p></div>` : ""}
+      ${query && query.after ? `<div class="info-card" style="text-align:left;margin:0 0 18px"><p><b>💳 Оплата переводом</b></p><p class="muted" style="font-size:13.5px;margin-top:6px">После подтверждения менеджер пришлёт реквизиты в чат, а в профиле появится кнопка «Оплатить».</p></div>` : ""}
       ${pct ? `<p class="muted" style="max-width:34ch;margin:-8px auto 22px;font-size:13.5px">После выполнения заказа начислим ${pct}% бонусами 💎</p>` : ""}
       ${state.lastGiftLink ? `<div class="info-card" style="text-align:left;margin:0 0 18px"><p><b>🎁 Цифровая открытка готова</b></p><p class="muted" style="font-size:13.5px;margin-top:6px">Отправьте её получателю — он увидит ваши слова${feat("bonuses") && LOY().giftBonus ? ` и получит ${LOY().giftBonus} бонусов` : ""}.</p>
         <button class="btn block" style="margin-top:12px" data-action="sendGift">Отправить открытку</button></div>` : ""}
@@ -485,6 +512,38 @@
     } catch (e) { /* keep polling */ }
   }
 
+  /* ---------------- payment by transfer to the shop's card ---------------- */
+  function viewTransfer(id) {
+    const t = state.transfer && String(state.transfer.id) === String(id) ? state.transfer : null;
+    if (!t) {
+      if (!state.transferLoading) {
+        state.transferLoading = true;
+        api(`/api/orders/${encodeURIComponent(id)}/transfer`).then((d) => { state.transfer = d; }).catch((e) => { state.transfer = { id, error: e.message }; }).finally(() => { state.transferLoading = false; render(); });
+      }
+      return `<div class="page empty"><p class="muted">Загружаем реквизиты…</p></div>`;
+    }
+    if (t.error) return `<div class="page empty"><h1 class="display">Оплата заказа №${esc(id)}</h1><p>${esc(t.error)}</p><a class="btn" href="#/profile">Мои заказы</a></div>`;
+    if (t.paid) return `<div class="page empty"><h1 class="display">Заказ №${esc(id)} оплачен</h1><p>Оплата получена ✅ Спасибо!</p><a class="btn" href="#/">На главную</a></div>`;
+    if (!t.payable) return `<div class="page empty"><h1 class="display">Заказ №${esc(id)}</h1><p>Реквизиты для оплаты пришлём после подтверждения заказа.</p><a class="btn" href="#/profile">Мои заказы</a></div>`;
+    const row = (label, value, copy) => value ? `<div class="req-row"><span>${label}</span><b>${esc(value)}</b>${copy ? `<button class="btn soft small" data-action="copyText" data-text="${esc(copy)}">Копировать</button>` : ""}</div>` : "";
+    return `<div class="page">
+      <h1 class="display" style="font-size:34px;margin-top:8px">Оплата</h1>
+      <p class="lead">Заказ №${esc(id)} · перевод на карту или по СБП</p>
+      <div class="pay-card">
+        <div class="pay-sum">${rub(t.amount)}</div>
+        ${row("Карта", t.card, t.card.replace(/\s/g, ""))}
+        ${row("СБП по номеру", t.phone, t.phone.replace(/[^\d+]/g, ""))}
+        ${row("Банк", t.bank)}
+        ${row("Получатель", t.holder)}
+        ${t.note ? `<p class="muted" style="font-size:13px;margin:10px 0 0">${esc(t.note)}</p>` : ""}
+        ${t.claimed ? `<div class="info-card" style="margin-top:14px"><p><b>Вы сообщили об оплате</b></p><p class="muted" style="font-size:13.5px;margin-top:4px">Менеджер проверит поступление и подтвердит — сообщение придёт в чат.</p></div>`
+          : `<button class="btn block" style="margin-top:16px" data-action="transferDone" data-id="${esc(id)}" ${t.sending ? "disabled" : ""}>${t.sending ? "Отправляем…" : "Я оплатил(а)"}</button>`}
+        <a class="btn ghost block" style="margin-top:8px" href="#/profile">${t.claimed ? "Мои заказы" : "Оплачу позже"}</a>
+      </div>
+      <p class="muted" style="font-size:12.5px;margin-top:12px">Переведите точную сумму. «Я оплатил(а)» — нажмите после перевода: менеджер получит уведомление.${t.claimed ? "" : " Реквизиты всегда можно открыть снова: Профиль → Мои заказы → «Оплатить»."}</p>
+    </div>`;
+  }
+
   /* ---------------- profile ---------------- */
   function viewProfile() {
     if (!host && !window.__MOCK) return `<div class="page empty"><h1 class="display">Профиль</h1><p>Откройте магазин через бота в ${HOST_NAME}, чтобы видеть бонусы и заказы.</p></div>`;
@@ -522,20 +581,22 @@
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">
           ${feat("repeat") ? `<button class="btn soft small" data-action="repeatOrder" data-id="${o.id}">Повторить</button>` : ""}
           ${o.status === "pay" && !o.paid ? `<button class="btn small" data-action="retryPay" data-id="${o.id}">Оплатить</button>` : ""}
+          ${o.transferPayable && !o.transferClaimed ? `<a class="btn small" href="#/transfer/${o.id}" data-action="openTransfer" data-id="${o.id}">Оплатить ${rub(o.toPay)}</a>` : ""}
+          ${o.transferPayable && o.transferClaimed ? `<span class="muted" style="font-size:13px;align-self:center">💳 Оплата на проверке</span>` : ""}
           ${o.giftLink ? `<button class="btn ghost small" data-action="sendGift" data-link="${esc(o.giftLink)}">🎁 Открытка</button>` : ""}
         </div></div>`).join("") : `<p class="muted">Здесь появятся ваши заказы.</p>`}
 
       ${feat("broadcasts") ? `<label class="check" style="margin-top:22px"><input type="checkbox" data-action="toggleConsent" ${p.consent ? "checked" : ""}><span>Присылать акции, напоминания о датах и бонусах</span></label>` : ""}
       ${feat("bonuses") && p.history.length ? `<details class="history"><summary>История бонусов</summary>${p.history.map((h) => `<div class="addon"><span class="t">${esc(h.note || h.kind)}<br><small class="muted">${ddmm(h.at)}</small></span><span class="p" style="color:${h.delta > 0 ? "var(--accent)" : "var(--muted)"}">${h.delta > 0 ? "+" : ""}${h.delta}</span></div>`).join("")}</details>` : ""}
-      <a class="btn ghost block" style="margin-top:22px" href="#/about">О мастерской</a>
+      <a class="btn ghost block" style="margin-top:22px" href="#/about">${esc(state.catalog.settings.aboutLabel || "О мастерской")}</a>
     </div>`;
   }
 
   function viewAbout() {
     const s = state.catalog.settings;
     return `<div class="page">
-      <h1 class="display" style="font-size:38px;margin-top:8px">Мастерская клубники в шоколаде</h1>
-      <p class="lead">Sweet Roses, Иркутск. ${esc(s.hours)}</p>
+      <h1 class="display" style="font-size:38px;margin-top:8px">${esc(s.tagline || s.brand)}</h1>
+      <p class="lead">${esc(s.brand)}, ${esc(s.city || "Иркутск")}. ${esc(s.hours)}</p>
       <div style="margin-top:20px">${s.about.map((t) => `<div class="info-block"><p style="color:var(--text);font-size:15px">${esc(t)}</p></div>`).join("")}</div>
       <h2 class="h2">Доставка и оплата</h2>
       ${s.delivery.map((t) => `<div class="info-block"><p>${esc(t)}</p></div>`).join("")}
@@ -550,14 +611,14 @@
       <h1 class="display" style="font-size:38px;margin-top:8px">Контакты</h1>
       <p class="lead">${esc(s.hours)}. Менеджер отвечает в течение 10 минут.</p>
       <div style="margin-top:18px">
-        <a class="contact-row" href="tel:${esc(tel)}"><span>Телефон</span><b>${esc(s.phone)}</b></a>
-        <a class="contact-row" href="${esc(s.map2gis)}" data-ext><span>Мастерская</span><b>${esc(s.address)}</b></a>
-        <a class="contact-row" href="mailto:${esc(s.email)}"><span>Почта</span><b>${esc(s.email)}</b></a>
+        ${s.phone ? `<a class="contact-row" href="tel:${esc(tel)}"><span>Телефон</span><b>${esc(s.phone)}</b></a>` : ""}
+        ${s.address ? `<a class="contact-row" href="${esc(s.map2gis)}" data-ext><span>${esc(s.placeLabel || "Мастерская")}</span><b>${esc(s.address)}</b></a>` : ""}
+        ${s.email ? `<a class="contact-row" href="mailto:${esc(s.email)}"><span>Почта</span><b>${esc(s.email)}</b></a>` : ""}
         ${s.socials.map((x) => `<a class="contact-row" href="${esc(x.url)}" data-ext><span>${esc(x.title)}</span><b>Открыть</b></a>`).join("")}
       </div>
       <a class="btn block" style="margin-top:20px" href="${esc(s.map2gis)}" data-ext>Построить маршрут в 2ГИС</a>
-      <a class="btn ghost block" style="margin-top:10px" href="#/about">О мастерской, доставка и оплата</a>
-      <p class="muted" style="font-size:11.5px;margin-top:18px">*Instagram принадлежит компании Meta, деятельность которой запрещена в РФ.</p>
+      <a class="btn ghost block" style="margin-top:10px" href="#/about">${esc(s.aboutLabel || "О мастерской")}, доставка и оплата</a>
+      ${s.socials.some((x) => /instagram/i.test(x.title)) ? `<p class="muted" style="font-size:11.5px;margin-top:18px">*Instagram принадлежит компании Meta, деятельность которой запрещена в РФ.</p>` : ""}
     </div>`;
   }
 
@@ -597,21 +658,33 @@
     else if (d) body = ({ orders: adminOrders, products: adminProducts, categories: adminCategories, extras: adminExtras, settings: adminSettings, stats: adminStats, edit: adminEdit, customers: adminCustomers, customer: adminCustomer, broadcast: adminBroadcast, loyalty: adminLoyalty, promo: adminPromo }[tab] || adminOrders)(d, arg);
     return `<div class="page"><h1 class="display" style="font-size:34px;margin-top:8px">Управление</h1>${tab === "edit" || tab === "customer" ? "" : adminTabs(tab)}${body}</div>`;
   }
+  function payBadge(o) {
+    if (o.payMethod !== "transfer") return "";
+    if (o.paid) return `<div class="pay-badge ok">✅ Оплата получена (перевод)</div>`;
+    if (o.transferClaimedAt) return `<div class="pay-badge claim">💳 Клиент сообщил об оплате ${ddmm(o.transferClaimedAt)} в ${new Intl.DateTimeFormat("ru-RU", { timeZone: TZ, hour: "2-digit", minute: "2-digit" }).format(new Date(o.transferClaimedAt))} — проверьте в банке</div>`;
+    return `<div class="pay-badge wait">💳 Перевод: ${o.transferMode === "after" ? "реквизиты уйдут клиенту после «В работе»" : "ждём оплату"}</div>`;
+  }
   function adminOrders(d) {
     if (!d.orders.length) return `<div class="empty"><p>Заявок пока нет. Они появятся здесь и придут вам в ${HOST_NAME}.</p></div>`;
-    return d.orders.map((o) => `<div class="order">
+    return d.orders.map((o) => {
+      const pics = [...new Set(o.totals.lines.map((l) => l.image).filter(Boolean))].slice(0, 6);
+      return `<div class="order">
       <div class="h"><span>№${o.id} · ${rub(o.totals.total)}</span><span class="status">${STATUS[o.status] || o.status}${o.paid ? " · ✅ оплачен" : ""}</span></div>
+      ${pics.length ? `<div class="order-pics">${pics.map((u) => `<a href="${esc(u)}" data-ext>${imgTag(u, 240, "")}</a>`).join("")}</div>` : ""}
       <pre>${esc(o.summary)}</pre>
+      ${payBadge(o)}
       <div style="display:flex;gap:6px;flex-wrap:wrap">
+        ${o.payMethod === "transfer" && !o.paid && o.status !== "cancel" ? `<button class="btn small" data-action="orderPaid" data-id="${o.id}">Оплата получена</button>` : ""}
         <a class="btn soft small" href="tel:${esc(o.phone)}">Позвонить</a>
-        ${Object.entries(STATUS).filter(([k]) => k !== o.status && k !== "pay").map(([k, t]) => `<button class="btn ghost small" data-action="orderStatus" data-id="${o.id}" data-s="${k}">${t}</button>`).join("")}
-      </div></div>`).join("");
+        ${Object.entries(STATUS).filter(([k]) => k !== o.status && k !== "pay").map(([k, t]) => `<button class="btn ghost small" data-action="orderStatus" data-id="${o.id}" data-s="${k}">${k === "work" && o.status === "new" ? "Подтвердить" : t}</button>`).join("")}
+      </div></div>`;
+    }).join("");
   }
   function adminProducts(d) {
     const q = state.admin.search.toLowerCase();
     const list = d.products.slice().sort((a, b) => a.sort - b.sort).filter((p) => !q || p.title.toLowerCase().includes(q));
     return `<div style="display:flex;gap:8px;margin-bottom:6px"><button class="btn small" data-action="go" data-to="#/admin/edit/new">Добавить товар</button>
-      <button class="btn soft small" data-action="importSite">Обновить с сайта</button></div>
+      ${d.settings.tildaParts ? `<button class="btn soft small" data-action="importSite">Обновить с сайта</button>` : ""}</div>
       <input class="search" type="search" placeholder="Поиск товара" value="${esc(state.admin.search)}" data-input="adminSearch">
       ${list.map((p) => `<div class="admin-row ${p.hidden ? "is-hidden" : ""}">${imgTag(p.images[0], 120, "")}
         <a href="#/admin/edit/${esc(p.id)}" style="text-decoration:none"><div class="t">${esc(p.title)}</div><div class="s">${rub(p.price)}${p.hidden ? " · скрыт" : ""}</div></a>
@@ -661,9 +734,30 @@
       <div class="admin-row" style="grid-template-columns:1fr 70px auto"><input class="input" name="code_new" placeholder="Новый код" style="min-height:40px"><input class="input" name="percent_new" type="number" placeholder="%" style="min-height:40px"><span></span></div>
       <button class="btn block" type="submit" style="margin-top:12px">Сохранить промокоды</button></form>`;
   }
+  function zoneRow(z) {
+    z = z || { id: "", name: "", price: "", freeFrom: "", from: "", to: "" };
+    return `<div class="zone-row" data-zid="${esc(z.id)}">
+      <div style="display:grid;grid-template-columns:1fr auto;gap:8px"><input class="input" name="zname" value="${esc(z.name)}" placeholder="Например: Октябрьский" maxlength="60" aria-label="Название района">
+        <button type="button" class="icon-x" data-action="delZone" aria-label="Удалить район">×</button></div>
+      <div class="zone-grid">
+        <label><span>Доставка, ₽</span><input class="input" name="zprice" type="number" min="0" value="${z.price === "" ? "" : z.price}" placeholder="300"></label>
+        <label><span>Бесплатно от, ₽</span><input class="input" name="zfree" type="number" min="0" value="${z.freeFrom || ""}" placeholder="—"></label>
+        <label><span>Время от, мин</span><input class="input" name="zfrom" type="number" min="0" max="1440" value="${z.from || ""}" placeholder="40"></label>
+        <label><span>до, мин</span><input class="input" name="zto" type="number" min="0" max="1440" value="${z.to || ""}" placeholder="60"></label>
+      </div></div>`;
+  }
+  function adminZones(s) {
+    return `<form data-form="zones" class="zones-form">
+      <h2 class="h2" style="font-size:22px;margin-top:6px">Районы доставки</h2>
+      <p class="muted" style="font-size:13px;margin:-4px 0 6px">Клиент при доставке сначала выбирает район: цена сразу добавляется к заказу, а время показываем только то, к которому успеете. Нет районов — доставку считает менеджер, как раньше.</p>
+      <div data-zones>${(s.zones || []).map(zoneRow).join("")}</div>
+      <button type="button" class="btn soft block" style="margin-top:10px" data-action="addZone">+ Добавить район</button>
+      <button class="btn block" type="submit" style="margin-top:10px">Сохранить районы</button>
+    </form>`;
+  }
   function adminSettings(d) {
     const s = d.settings;
-    return `<form data-form="settings">
+    return `${adminZones(s)}<h2 class="h2" style="font-size:22px">Магазин</h2><form data-form="settings">
       <label class="field"><span>Заголовок на главной</span><input class="input" name="banner.title" value="${esc(s.banner.title)}"></label>
       <label class="field"><span>Текст под заголовком</span><input class="input" name="banner.text" value="${esc(s.banner.text)}"></label>
       <label class="field"><span>Фото на главной (ссылка)</span><input class="input" name="banner.image" value="${esc(s.banner.image)}"></label>
@@ -800,7 +894,27 @@
       <div class="seg" style="margin-top:10px"><button type="button" data-action="payProvider" data-p="demo" aria-pressed="${P.provider === "demo"}">Демо</button><button type="button" data-action="payProvider" data-p="yookassa" aria-pressed="${P.provider === "yookassa"}">ЮKassa</button></div>
       <input type="hidden" name="provider" value="${esc(P.provider)}">
       <p class="muted" style="font-size:12.5px;margin-top:8px">${P.provider === "demo" ? "Демо: оплата без настоящих денег — чтобы показать, как это работает." : d.env.yookassa ? "ЮKassa подключена. Деньги приходят прямо на счёт магазина. Адрес для уведомлений в кабинете ЮKassa: …/api/pay/yookassa" : "ЮKassa не подключена: ключи магазина (YOOKASSA_SHOP_ID и YOOKASSA_SECRET_KEY) добавляются в настройки сервера."}</p>
-      <button class="btn block" type="submit" style="margin-top:16px">Сохранить</button></form>`;
+      <button class="btn block" type="submit" style="margin-top:16px">Сохранить</button></form>
+      ${adminTransfer(d)}`;
+  }
+  function adminTransfer(d) {
+    const T = d.transferResolved || {};
+    return `<form data-form="transfer" style="margin-top:8px">
+      <h2 class="h2" style="font-size:22px">Оплата переводом на карту</h2>
+      <p class="muted" style="font-size:13px;margin:-4px 0 6px">Без банка и договоров: клиент переводит на вашу карту или по СБП и нажимает «Я оплатил», вам приходит уведомление, вы проверяете поступление и жмёте «Оплата получена». Реквизиты можно поменять здесь в любой момент.</p>
+      <label class="toggle-row"><span>Принимать оплату переводом</span><input type="checkbox" name="tEnabled" ${T.enabled ? "checked" : ""}></label>
+      <div class="field"><span>Когда клиент платит</span>
+        <div class="seg"><button type="button" data-action="tMode" data-m="now" aria-pressed="${T.mode !== "after"}">Сразу после заказа</button><button type="button" data-action="tMode" data-m="after" aria-pressed="${T.mode === "after"}">После подтверждения</button></div>
+        <input type="hidden" name="tMode" value="${T.mode === "after" ? "after" : "now"}">
+        <div class="muted" style="font-size:12.5px;margin-top:6px">«Сразу» — реквизиты видны сразу после оформления, удобно для ночных заказов. «После подтверждения» — реквизиты уйдут клиенту в чат, когда нажмёте «Подтвердить».</div></div>
+      <label class="field"><span>Номер карты</span><input class="input" name="tCard" inputmode="numeric" value="${esc(T.card || "")}" placeholder="2200 0000 0000 0000"></label>
+      <label class="field"><span>Телефон для СБП</span><input class="input" name="tPhone" type="tel" value="${esc(T.phone || "")}" placeholder="+7 900 000-00-00"></label>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <label class="field"><span>Банк</span><input class="input" name="tBank" value="${esc(T.bank || "")}" placeholder="Т-Банк"></label>
+        <label class="field"><span>Получатель</span><input class="input" name="tHolder" value="${esc(T.holder || "")}" placeholder="Имя и первая буква фамилии"></label></div>
+      <label class="field"><span>Подсказка клиенту (необязательно)</span><input class="input" name="tNote" value="${esc(T.note || "")}" maxlength="200" placeholder="Например: в комментарии к переводу укажите номер заказа"></label>
+      ${d.paymentsResolved && d.paymentsResolved.enabled && d.loyaltyResolved.features.payments ? `<p class="err" style="font-size:12.5px">Сейчас включена онлайн-оплата — пока она включена, перевод не показывается.</p>` : ""}
+      <button class="btn block" type="submit" style="margin-top:14px">Сохранить оплату переводом</button></form>`;
   }
 
   /* ---------------- router ---------------- */
@@ -825,6 +939,7 @@
     else if (a === "checkout") { html = viewCheckout(); tab = "cart"; root = false; }
     else if (a === "done") { html = viewDone(b, query); tab = "cart"; }
     else if (a === "pay") { html = viewPay(b); tab = "cart"; root = false; }
+    else if (a === "transfer") { html = viewTransfer(b); tab = "profile"; root = false; }
     else if (a === "gift") { html = viewGift(b); tab = "home"; }
     else if (a === "profile") { html = viewProfile(); tab = "profile"; }
     else if (a === "about") { html = viewAbout(); tab = "profile"; root = false; }
@@ -905,7 +1020,25 @@
       } catch (e) { state.promo.message = e.message; state.promo.percent = 0; }
       render(); return;
     }
-    if (act === "method") { initCheckout().method = ds.m; render(); return; }
+    if (act === "method") { initCheckout().method = ds.m; fixSlot(); render(); return; }
+    if (act === "zone") { const c = initCheckout(); c.zoneId = ds.id; delete c.errors.zone; fixSlot(); haptic(); render(); return; }
+    if (act === "openTransfer") { state.transfer = null; return; }
+    if (act === "transferDone") {
+      const t = state.transfer; if (!t) return;
+      t.sending = true; render();
+      try { state.transfer = await api(`/api/orders/${ds.id}/transfer`, { method: "POST" }); haptic("ok"); loadProfile(); location.hash = `#/done/${ds.id}?claimed=1`; }
+      catch (e) { t.sending = false; render(); toast(e.message); }
+      return;
+    }
+    if (act === "orderPaid") {
+      const go = () => adminCall(`/api/admin/orders/${ds.id}`, "PATCH", { paid: true }, "orders").then((r) => r && toast("Отмечено: оплата получена"));
+      const q = `Деньги за заказ №${ds.id} пришли? Клиенту придёт сообщение «Оплата получена».`;
+      if (tg && tg.showConfirm) tg.showConfirm(q, (yes) => yes && go()); else if (window.confirm(q)) go();
+      return;
+    }
+    if (act === "addZone") { $app.querySelector("[data-zones]").insertAdjacentHTML("beforeend", zoneRow()); const r = $app.querySelectorAll(".zone-row"); r[r.length - 1].querySelector("input").focus(); return; }
+    if (act === "delZone") { el.closest(".zone-row").remove(); return; }
+    if (act === "tMode") { const f = el.closest("form"); f.tMode.value = ds.m; f.querySelectorAll("[data-action=tMode]").forEach((b) => b.setAttribute("aria-pressed", b === el)); return; }
     if (act === "slot") { initCheckout().time = ds.t; delete state.checkout.errors.time; render(); return; }
     if (act === "shareContact") {
       const setPhone = (phone) => { if (phone) { phone = String(phone); state.checkout.phone = (phone.startsWith("+") ? "" : "+") + phone; render(); } };
@@ -1027,7 +1160,7 @@
       const f = k.slice(3);
       initCheckout()[f] = v;
       if (state.checkout.errors[f]) { delete state.checkout.errors[f]; }
-      if (f === "date") { state.checkout.time = ""; render(); }
+      if (f === "date") { state.checkout.time = ""; fixSlot(); render(); }
       if (f === "consent" || f === "useBonus" || f === "marketing" || f === "isGift") render();
     }
   });
@@ -1094,6 +1227,17 @@
       if (await adminCall("/api/admin/settings", "PUT", body, "loyalty")) { toast("Сохранено"); loadProfile(); }
       return;
     }
+    if (f.dataset.form === "zones") {
+      const zones = [...f.querySelectorAll(".zone-row")].map((r) => ({ id: r.dataset.zid, name: r.querySelector("[name=zname]").value.trim(), price: +r.querySelector("[name=zprice]").value || 0,
+        freeFrom: +r.querySelector("[name=zfree]").value || 0, from: +r.querySelector("[name=zfrom]").value || 0, to: +r.querySelector("[name=zto]").value || 0 })).filter((z) => z.name);
+      if (await adminCall("/api/admin/settings", "PUT", { zones }, "settings")) toast(zones.length ? "Районы сохранены" : "Районы убраны");
+      return;
+    }
+    if (f.dataset.form === "transfer") {
+      const body = { transfer: { enabled: fd.get("tEnabled") === "on", mode: fd.get("tMode"), card: fd.get("tCard"), phone: fd.get("tPhone"), bank: fd.get("tBank"), holder: fd.get("tHolder"), note: fd.get("tNote") } };
+      if (await adminCall("/api/admin/settings", "PUT", body, "loyalty")) toast("Оплата переводом сохранена");
+      return;
+    }
     if (f.dataset.form === "promos") {
       const promos = [];
       for (let i = 0; fd.has("code_" + i); i++) {
@@ -1116,11 +1260,17 @@
   }
   async function refreshCatalog() { if (!window.__MOCK) state.catalog = await api("/api/catalog"); }
 
+  /** After the method, zone or date changes, drop a chosen time the courier can no longer make. */
+  function fixSlot() {
+    const c = state.checkout;
+    if (c && c.time && slotsFor(c.date, c).some((x) => x.s === c.time && x.disabled)) c.time = "";
+  }
   function validate(c) {
     const e = {};
     if (c.name.trim().length < 2) e.name = "Укажите имя, чтобы менеджер знал, как к вам обращаться";
     const digits = c.phone.replace(/\D/g, "");
     if (digits.length < 10 || digits.length > 12) e.phone = "Проверьте номер: нужно 10–11 цифр, например +7 900 000-00-00";
+    if (c.method === "delivery" && zones().length && !zoneById(c.zoneId)) e.zone = "Выберите район — от него зависят цена и время доставки";
     if (c.method === "delivery" && c.address.trim().length < 5) e.address = "Укажите улицу и дом для курьера";
     if (!c.time) e.time = "Выберите время готовности";
     if (!c.consent) e.consent = "Без согласия мы не сможем принять заявку";
@@ -1134,12 +1284,12 @@
     try {
       const body = {
         cart: state.cart, promoCode: state.promo.percent ? state.promo.code : "",
-        customer: { name: c.name.trim(), phone: c.phone.trim(), date: c.date, time: c.time, method: c.method, address: c.address.trim(), comment: c.comment.trim() },
+        customer: { name: c.name.trim(), phone: c.phone.trim(), date: c.date, time: c.time, method: c.method, address: c.address.trim(), zoneId: c.method === "delivery" ? c.zoneId || "" : "", comment: c.comment.trim() },
         useBonus: !!c.useBonus, consent: !!c.marketing,
         gift: c.isGift ? { to: (c.giftTo || "").trim(), text: (c.giftText || "").trim() } : undefined,
       };
       const r = window.__MOCK ? { id: 1024 } : await api("/api/orders", { method: "POST", body });
-      store("sr_contact", { name: c.name, phone: c.phone, address: c.address });
+      store("sr_contact", { name: c.name, phone: c.phone, address: c.address, zoneId: c.zoneId || "" });
       state.cart = { lines: [], addons: {}, cardText: "" }; saveCart();
       state.promo = { code: "", percent: 0, message: "" };
       state.checkout = null;
@@ -1147,7 +1297,8 @@
       loadProfile();
       state.lastGiftLink = r.giftLink || "";
       if (r.pay) { state.payment = Object.assign({ id: r.id }, r.pay); location.hash = "#/pay/" + r.id; }
-      else { if (r.payError) toast(r.payError); location.hash = "#/done/" + r.id; }
+      else if (r.transfer) { state.transfer = r.transfer; location.hash = "#/transfer/" + r.id; }
+      else { if (r.payError) toast(r.payError); location.hash = "#/done/" + r.id + (r.transferAfter ? "?after=1" : ""); }
     } catch (e) { c.sending = false; c.errors = { form: e.message }; render(); }
   }
 
@@ -1198,7 +1349,12 @@
       $app.innerHTML = `<div class="page empty"><h1 class="display">Не загрузилось</h1><p>${esc(e.message)}</p><button class="btn" onclick="location.reload()">Обновить</button></div>`;
       return;
     }
-    const tel = state.catalog.settings.phone.replace(/[^\d+]/g, "");
+    const S = state.catalog.settings;
+    if (S.brand) document.title = S.brand;
+    if (S.theme) document.documentElement.dataset.brand = S.theme;
+    const mono = document.querySelector(".monogram");
+    if (S.monogram && mono) { mono.innerHTML = `${esc(S.monogram[0])}<i></i>${esc(S.monogram[1])}`; mono.setAttribute("aria-label", S.brand + " — на главную"); }
+    const tel = S.phone.replace(/[^\d+]/g, "");
     document.getElementById("topLeft").href = "tel:" + tel;
     updateBadge();
     if (!window.__MOCK) track("visit");

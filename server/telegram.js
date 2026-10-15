@@ -54,6 +54,14 @@ function createBot({ token, webAppUrl, log = console }) {
     return call("sendMessage", Object.assign({ chat_id: chatId, text, parse_mode: "HTML", disable_web_page_preview: true }, extra || {}));
   }
 
+  /** Photos of an order (public https links). One photo — sendPhoto, several — an album with the caption on the first. */
+  async function sendPhotos(chatId, urls, caption) {
+    urls = (urls || []).slice(0, 10);
+    if (!urls.length) return null;
+    if (urls.length === 1) return call("sendPhoto", { chat_id: chatId, photo: urls[0], caption: String(caption || "").slice(0, 1000) });
+    return call("sendMediaGroup", { chat_id: chatId, media: urls.map((u, i) => Object.assign({ type: "photo", media: u }, i ? {} : { caption: String(caption || "").slice(0, 1000) })) });
+  }
+
   let running = false;
   async function startPolling(hooks) {
     hooks = hooks || {};
@@ -94,7 +102,7 @@ function createBot({ token, webAppUrl, log = console }) {
   }
   function stop() { running = false; }
 
-  return { call, sendMessage, startPolling, stop, openButton, setWebAppUrl, getWebAppUrl: () => currentUrl, getUsername: () => username };
+  return { call, sendMessage, sendPhotos, startPolling, stop, openButton, setWebAppUrl, getWebAppUrl: () => currentUrl, getUsername: () => username };
 }
 
 module.exports = { validateInitData, signInitData, createBot };

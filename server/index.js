@@ -8,7 +8,7 @@ const PLATFORM_NAME = { telegram: "Telegram", max: "MAX" };
 const { buildOrder, isFirstOrder, managerMessage, summaryText } = require("./orders");
 const { trackEvent, report } = require("./stats");
 const { fetchStore, mergeProducts } = require("./tilda");
-const { findPromo, formatRub } = require("../public/pricing.js");
+const { findPromo, formatRub, zoneTime } = require("../public/pricing.js");
 const LY = require("./loyalty");
 const { createPayments } = require("./payments");
 const qrcode = require("./vendor/qrcode.js");
@@ -40,7 +40,8 @@ function createApp(opts = {}) {
     dataDir: opts.dataDir ?? process.env.DATA_DIR ?? (fs.existsSync("/data") ? "/data" : path.join(__dirname, "..", "data")),
     devMode: opts.devMode ?? process.env.DEV_MODE === "1",
     publicDir: path.join(__dirname, "..", "public"),
-    seedFile: path.join(__dirname, "..", "seed", "catalog.seed.json"),
+    // SEED=gagulya starts a new shop from seed/gagulya.seed.json (only used on the very first start, when /data is empty)
+    seedFile: opts.seedFile ?? path.join(__dirname, "..", "seed", (/^[a-z0-9-]{1,40}$/.test(process.env.SEED || "") ? process.env.SEED : "catalog") + ".seed.json"),
   };
   const store = createStore(config.dataDir, config.seedFile);
   const bot = opts.bot !== undefined ? opts.bot : config.botToken ? M.createBot({ token: config.botToken, webAppUrl: process.env.WEBAPP_URL || store.getCatalog().settings.webAppUrl || "" }) : null;
@@ -51,6 +52,27 @@ function createApp(opts = {}) {
   const loyal = () => LY.loyaltyOf(store.getCatalog().settings);
   const paySettings = () => Object.assign({ enabled: false, provider: "demo" }, store.getCatalog().settings.payments || {});
   const paymentsOn = () => paySettings().enabled && LY.on(loyal(), "payments");
+  /* Payment by transfer to the shop's own card / SBP phone. The owner enters the details in the admin; the manager confirms receipt. */
+  const transferSettings = () => Object.assign({ enabled: false, mode: "now", card: "", phone: "", bank: "", holder: "", note: "" }, store.getCatalog().settings.transfer || {});
+  const transferOn = () => { const t = transferSettings(); return !!(t.enabled && (t.card || t.phone)) && !paymentsOn(); };
+  const transferPayable = (o) => o.payMethod === "transfer" && !o.paid && o.status !== "cancel" && o.status !== "done" && (o.transferMode !== "after" || o.status === "work");
+  function transferInfo(o) {
+    const t = transferSettings();
+    return { id: o.id, amount: o.toPay ?? o.totals.total, card: t.card, phone: t.phone, bank: t.bank, holder: t.holder, note: t.note, claimed: !!o.transferClaimedAt, paid: !!o.paid, payable: transferPayable(o) };
+  }
+  function transferText(o) {
+    const t = transferSettings(), e = (x) => String(x).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+    return [
+      `К оплате: <b>${formatRub(o.toPay ?? o.totals.total)}</b>`,
+      t.card ? `Карта: <b>${e(t.card)}</b>` : "",
+      t.phone ? `СБП по номеру: <b>${e(t.phone)}</b>` : "",
+      t.bank ? `Банк: ${e(t.bank)}` : "",
+      t.holder ? `Получатель: ${e(t.holder)}` : "",
+      t.note ? e(t.note) : "",
+      "После перевода нажмите «Я оплатил» в приложении.",
+    ].filter(Boolean).join("\n");
+  }
+  const E = () => store.getCatalog().settings.emoji || "🍓";
   let paymentsInst = null;
   function payments() {
     if (opts.payments) return opts.payments;
@@ -138,11 +160,12 @@ function createApp(opts = {}) {
     const settings = Object.assign({}, c.settings);
     delete settings.managerChatIds; delete settings.tildaParts; delete settings.ownerIds; delete settings.webAppUrl;
     const L = loyal();
-    delete settings.loyalty; delete settings.payments; delete settings.sources;
+    delete settings.loyalty; delete settings.payments; delete settings.sources; delete settings.transfer;
     return {
       platform: messenger,
       loyalty: { features: L.features, maxPayPercent: L.maxPayPercent, levels: L.levels, referral: L.referral, burnDays: L.burnDays, welcomeBonus: L.welcomeBonus, giftBonus: L.giftBonus },
       payments: { enabled: paymentsOn(), provider: paySettings().provider },
+      transfer: { enabled: transferOn(), mode: transferSettings().mode },
       categories: cats,
       products: c.products.filter((p) => !p.hidden).map(({ sourceUrl, ...p }) => p),
       addons: c.addons.filter((a) => !a.hidden),
@@ -162,6 +185,26 @@ function createApp(opts = {}) {
       try { await bot.sendMessage(id, text); results.push(id); } catch (e) { log.error("Notify " + id + ": " + e.message); }
     }
     return results;
+  }
+
+  /** Absolute address of a product photo, so the messenger can fetch it (uploads are served by this app at /u/...). */
+  function absUrl(u) {
+    if (/^https:\/\//.test(u)) return u;
+    const base = (process.env.WEBAPP_URL || store.getCatalog().settings.webAppUrl || "").replace(/\/$/, "");
+    return base && /^\/(u|demo)\//.test(u) ? base + u : "";
+  }
+  /** New order to the managers: the text first, then the photos of what was ordered (if the bot can send pictures). */
+  async function notifyOrder(o) {
+    const sent = await notify(managerMessage(o, messenger, E()));
+    if (o.photosSent || !bot || !bot.sendPhotos || !sent.length) return sent;
+    const urls = [...new Set(o.totals.lines.map((l) => absUrl(l.image || "")).filter(Boolean))].slice(0, 6);
+    if (!urls.length) return sent;
+    o.photosSent = true; store.saveOrders();
+    const titles = o.totals.lines.filter((l) => l.image).map((l) => l.title + (l.qty > 1 ? " × " + l.qty : "")).join(", ");
+    for (const id of sent) {
+      try { await bot.sendPhotos(id, urls, `Фото к заявке №${o.id}: ${titles}`.slice(0, 1000)); } catch (e) { log.error("Фото в заявку " + id + ": " + e.message); }
+    }
+    return sent;
   }
 
   const routes = [];
@@ -216,6 +259,7 @@ function createApp(opts = {}) {
       history: LY.on(L, "bonuses") ? c.history.slice(0, 20) : [],
       orders: myOrders(user.id).slice(-20).reverse().map((o) => ({
         id: o.id, createdAt: o.createdAt, status: o.status, paid: !!o.paid, total: o.totals.total, toPay: o.toPay ?? o.totals.total,
+        payMethod: o.payMethod || "", transferPayable: transferPayable(o), transferClaimed: !!o.transferClaimedAt,
         bonusUsed: o.bonusUsed || 0, bonusAccrued: o.bonusAccrued || 0, date: o.date, time: o.time,
         lines: o.totals.lines.map((l) => ({ id: l.id, qty: l.qty, choc: l.choc || [], title: l.title })),
         giftLink: o.gift ? botLink("g_" + o.gift.id) : "",
@@ -267,7 +311,7 @@ function createApp(opts = {}) {
     order.paid = true; order.paidAt = new Date().toISOString();
     if (order.status === "pay") order.status = "new";
     store.saveOrders();
-    notify(managerMessage(order, messenger)).catch(() => {});
+    notifyOrder(order).catch(() => {});
     if (order.tgUser) sendUser(order.tgUser.id, `Оплата получена ✅\nЗаказ №${order.id} принят — ${store.getCatalog().settings.brand || "мы"} свяжемся с вами.`).catch(() => {});
   }
   on("POST", "/api/pay/demo", async ({ body }) => {
@@ -298,6 +342,24 @@ function createApp(opts = {}) {
     if (!o) throw httpError(404, "Заказ не найден");
     return { id: o.id, status: o.status, paid: !!o.paid, toPay: o.toPay ?? o.totals.total };
   });
+  on("GET", "/api/orders/:id/transfer", ({ user, params }) => {
+    needUser(user);
+    const o = myOrders(user.id).find((x) => String(x.id) === params.id);
+    if (!o || o.payMethod !== "transfer") throw httpError(404, "Заказ не найден");
+    return transferInfo(o);
+  });
+  on("POST", "/api/orders/:id/transfer", async ({ user, params }) => {
+    needUser(user);
+    const o = myOrders(user.id).find((x) => String(x.id) === params.id);
+    if (!o || o.payMethod !== "transfer") throw httpError(404, "Заказ не найден");
+    if (o.paid) return transferInfo(o);
+    if (!transferPayable(o)) throw httpError(400, o.status === "cancel" ? "Заказ отменён" : "Этот заказ пока не ждёт оплаты");
+    if (!o.transferClaimedAt) {
+      o.transferClaimedAt = new Date().toISOString(); store.saveOrders();
+      notify(`💳 <b>Заявка №${o.id}: клиент сообщил об оплате ${formatRub(o.toPay ?? o.totals.total)}</b>\n${o.name}, ${o.phone}\nПроверьте поступление в банке и нажмите «Оплата получена» в приложении (Управление → Заявки).`).catch(() => {});
+    }
+    return transferInfo(o);
+  });
   on("POST", "/api/promo", ({ body, user }) => {
     const p = findPromo(store.getCatalog(), body.code);
     if (!p) return { ok: false, message: "Такого промокода нет. Проверьте написание." };
@@ -319,7 +381,7 @@ function createApp(opts = {}) {
       if ("consent" in body) c.consent = !!body.consent;
       c.phone = order.phone; if (!c.name) c.name = order.name;
       if (body.useBonus) {
-        const amt = LY.maxPayable(L, LY.balance(c), order.totals.total);
+        const amt = LY.maxPayable(L, LY.balance(c), order.totals.total - (order.totals.delivery ? order.totals.delivery.price : 0));
         if (amt > 0) order.bonusUsed = LY.spendBonus(c, amt, { orderId: order.id, note: `Оплата заказа №${order.id}` });
       }
       store.saveCustomers();
@@ -333,19 +395,26 @@ function createApp(opts = {}) {
     store.saveOrders();
     recent.push(Date.now()); orderTimes.set(key, recent);
     trackEvent(store.getStats(), { type: "order" }); store.touchStats();
+    if (!paymentsOn() && transferOn() && user && order.toPay > 0) {
+      order.payMethod = "transfer"; order.transferMode = transferSettings().mode === "after" ? "after" : "now"; store.saveOrders();
+    }
     if (paymentsOn() && order.toPay > 0 && user) {
       order.status = "pay"; store.saveOrders();
       try { return { id: order.id, giftLink, pay: await startPayment(order) }; }
       catch (e) {
         log.error("Оплата: " + e.message);
         order.status = "new"; order.payError = e.message; store.saveOrders();
-        notify(managerMessage(order, messenger)).catch(() => {});
+        notifyOrder(order).catch(() => {});
         return { id: order.id, giftLink, payError: "Онлайн-оплата сейчас недоступна — менеджер свяжется с вами." };
       }
     }
-    notify(managerMessage(order, messenger)).catch(() => {});
-    if (user) sendUser(user.id, `Спасибо! Заявка №${order.id} принята 🍓\nМенеджер ${store.getCatalog().settings.brand || ""} свяжется с вами в течение 10 минут (ежедневно 10:00–20:00).`.replace("  ", " ")).catch(() => {});
-    return { id: order.id, giftLink };
+    const payNow = order.payMethod === "transfer" && order.transferMode !== "after";
+    notifyOrder(order).catch(() => {});
+    const S = store.getCatalog().settings;
+    if (user) sendUser(user.id, `Спасибо! Заявка №${order.id} принята ${E()}\n` + (payNow
+      ? `К оплате ${formatRub(order.toPay)}. Реквизиты для перевода — в приложении (Профиль → Мои заказы → «Оплатить»).`
+      : `Менеджер ${S.brand || ""} свяжется с вами в течение 10 минут${S.hours ? " (" + S.hours.toLowerCase() + ")" : ""}.`.replace("  ", " ")), payNow ? "Оплатить" : false).catch(() => {});
+    return Object.assign({ id: order.id, giftLink }, payNow ? { transfer: transferInfo(order) } : {}, order.payMethod === "transfer" && !payNow ? { transferAfter: true } : {});
   });
   on("POST", "/api/track", ({ body, user, ip }) => {
     const type = ["visit", "view", "cart"].includes(body.type) ? body.type : null;
@@ -362,7 +431,7 @@ function createApp(opts = {}) {
   const findColl = (name) => { if (!COLLS.includes(name)) throw httpError(404, "Неизвестный раздел"); return store.getCatalog()[name]; };
   /* ---------- photos uploaded from the admin's phone: /data/uploads/<random>.<ext>, served at /u/<name> ---------- */
   const UPLOAD_RE = /^[a-f0-9]{24}\.(jpg|png|webp)$/;
-  const okImage = (u) => /^https:\/\//.test(u) || (/^\/u\//.test(u) && UPLOAD_RE.test(u.slice(3)));
+  const okImage = (u) => /^https:\/\//.test(u) || (/^\/u\//.test(u) && UPLOAD_RE.test(u.slice(3))) || /^\/demo\/[a-z0-9-]{1,40}\.(jpg|png|webp)$/.test(u);
   const uploadsDir = path.join(config.dataDir, "uploads");
   function imageKind(buf) {
     if (buf.length > 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return "jpg";
@@ -397,14 +466,24 @@ function createApp(opts = {}) {
     return out;
   }
 
-  on("GET", "/api/admin/catalog", () => Object.assign({}, store.getCatalog(), { loyaltyResolved: loyal(), paymentsResolved: paySettings(), env: { yookassa: !!(process.env.YOOKASSA_SHOP_ID && process.env.YOOKASSA_SECRET_KEY) } }), { admin: true });
+  on("GET", "/api/admin/catalog", () => Object.assign({}, store.getCatalog(), { loyaltyResolved: loyal(), paymentsResolved: paySettings(), transferResolved: transferSettings(), env: { yookassa: !!(process.env.YOOKASSA_SHOP_ID && process.env.YOOKASSA_SECRET_KEY) } }), { admin: true });
   on("GET", "/api/admin/orders", () => ({ orders: store.getOrders().list.slice(-200).reverse().map((o) => ({ ...o, summary: summaryText(o) })) }), { admin: true });
   on("PATCH", "/api/admin/orders/:id", ({ params, body }) => {
     const o = store.getOrders().list.find((x) => String(x.id) === params.id);
     if (!o) throw httpError(404, "Заявка не найдена");
+    if ("paid" in body && !("status" in body)) {
+      const was = !!o.paid;
+      o.paid = !!body.paid; o.paidAt = o.paid ? o.paidAt || new Date().toISOString() : null; store.saveOrders();
+      if (o.paid && !was && o.tgUser) sendUser(o.tgUser.id, `Оплата заказа №${o.id} получена ✅ Спасибо!`).catch(() => {});
+      return { ok: true };
+    }
     if (!["new", "work", "done", "cancel", "pay"].includes(body.status)) throw httpError(400, "Неизвестный статус");
     const prev = o.status;
     o.status = body.status; store.saveOrders();
+    if (prev !== o.status && o.status === "work" && o.tgUser) {
+      const pay = transferPayable(o) && !o.transferClaimedAt && o.transferMode === "after";
+      sendUser(o.tgUser.id, pay ? `Заказ №${o.id} подтверждён ✅\n\n${transferText(o)}` : `Заказ №${o.id} подтверждён ✅ Уже готовим.`, pay ? "Оплатить" : false).catch(() => {});
+    }
     const c = o.tgUser && customers.get(o.tgUser.id);
     if (c && prev !== o.status) {
       const L = loyal();
@@ -412,7 +491,7 @@ function createApp(opts = {}) {
         const st = LY.orderStatsFor(store.getOrders(), c.id);
         const spentBefore = st.spent - Math.max(0, o.totals.total - (o.bonusUsed || 0));
         const r = LY.onOrderDone(custDb(), c, o, { settings: L, spentBefore });
-        if (r.accrued) sendUser(c.id, `Заказ №${o.id} выполнен 🍓 Спасибо!\nНачислено ${r.accrued} бонусов, на счёте ${LY.balance(c)}. Ими можно оплатить до ${L.maxPayPercent}% следующего заказа.`, true).catch(() => {});
+        if (r.accrued) sendUser(c.id, `Заказ №${o.id} выполнен ${E()} Спасибо!\nНачислено ${r.accrued} бонусов, на счёте ${LY.balance(c)}. Ими можно оплатить до ${L.maxPayPercent}% следующего заказа.`, true).catch(() => {});
         if (r.referrerRewarded) sendUser(r.referrerRewarded, `🎁 Ваш друг сделал первый заказ — вам начислено ${L.referral.referrerBonus} бонусов!`, true).catch(() => {});
       }
       if (prev === "done") LY.onOrderUndone(c, o);
@@ -576,6 +655,28 @@ function createApp(opts = {}) {
       }
       s.loyalty = next;
     }
+    if (Array.isArray(body.zones)) {
+      const seen = new Set();
+      s.zones = body.zones.slice(0, 30).map((z) => {
+        z = z || {};
+        let from = num(z.from, 0, 1440, 0), to = num(z.to, 0, 1440, 0);
+        if (to && from > to) [from, to] = [to, from];
+        let id = str(z.id, 20);
+        if (!/^z[a-z0-9]{1,18}$/.test(id) || seen.has(id)) id = "z" + crypto.randomBytes(4).toString("hex");
+        seen.add(id);
+        return { id, name: str(z.name, 60), price: num(z.price, 0, 100000, 0), freeFrom: num(z.freeFrom, 0, 1e6, 0), from, to, hidden: !!z.hidden };
+      }).filter((z) => z.name);
+    }
+    if (body.transfer && typeof body.transfer === "object") {
+      const b = body.transfer, cur = transferSettings();
+      const card = str(b.card, 40).replace(/\D/g, "");
+      if (card && (card.length < 16 || card.length > 19)) throw httpError(400, "Номер карты: 16–19 цифр");
+      const phone = str(b.phone, 30);
+      if (phone && !/^\d{10,12}$/.test(phone.replace(/\D/g, ""))) throw httpError(400, "Телефон для СБП: проверьте номер, например +7 900 000-00-00");
+      const next = { enabled: !!b.enabled, mode: b.mode === "after" ? "after" : "now", card: card.replace(/(\d{4})(?=\d)/g, "$1 "), phone, bank: str(b.bank, 40), holder: str(b.holder, 60), note: str(b.note, 200) };
+      if (next.enabled && !next.card && !next.phone) throw httpError(400, "Укажите номер карты или телефон для СБП — иначе клиенту некуда платить");
+      s.transfer = Object.assign(cur, next);
+    }
     if (body.payments && typeof body.payments === "object") {
       const cur = Object.assign({ enabled: false, provider: "demo" }, s.payments || {});
       if ("enabled" in body.payments) cur.enabled = !!body.payments.enabled;
@@ -596,7 +697,7 @@ function createApp(opts = {}) {
   }, { admin: true });
   on("POST", "/api/admin/test-notify", async ({ user }) => {
     if (!bot) throw httpError(400, "Бот не подключён: укажите BOT_TOKEN в настройках сервера.");
-    const sent = await notify(`🍓 <b>Тестовая заявка</b>\nЕсли вы видите это сообщение, заявки из мини-аппа будут приходить сюда.\nОтправил: ${user.first_name || user.id}`);
+    const sent = await notify(`${E()} <b>Тестовая заявка</b>\nЕсли вы видите это сообщение, заявки из мини-аппа будут приходить сюда.\nОтправил: ${user.first_name || user.id}`);
     if (!sent.length) throw httpError(400, "Не удалось отправить. Напишите боту /start с нужного аккаунта и проверьте ID в настройках.");
     return { ok: true, sent };
   }, { admin: true });
@@ -743,7 +844,7 @@ if (require.main === module) {
   // A light seed may ship without products: then the catalog is loaded from the Sweet Roses site on first start.
   (async function ensureProducts() {
     const c = app.store.getCatalog();
-    if (c.products.length) return;
+    if (c.products.length || !c.settings.tildaParts) return;
     try {
       const products = await fetchStore(c.settings.tildaParts || {});
       if (!products.length) throw new Error("пустой ответ");

@@ -1,8 +1,13 @@
 "use strict";
-const { computeTotals, formatRub } = require("../public/pricing.js");
+const { computeTotals, formatRub, zoneTime } = require("../public/pricing.js");
 
 const TZ = "Asia/Irkutsk";
 const todayISO = (now = new Date()) => new Intl.DateTimeFormat("en-CA", { timeZone: TZ }).format(now);
+function minutesNow(now = new Date()) {
+  const p = new Intl.DateTimeFormat("en-GB", { timeZone: TZ, hour: "2-digit", minute: "2-digit", hour12: false }).formatToParts(now);
+  return (+p.find((x) => x.type === "hour").value % 24) * 60 + +p.find((x) => x.type === "minute").value;
+}
+const slotMin = (t) => { const [h, m] = String(t).split(":").map(Number); return h * 60 + m; };
 const str = (v, max) => String(v == null ? "" : v).trim().slice(0, max);
 const escHtml = (s) => String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 
@@ -10,7 +15,7 @@ function validateCustomer(c, settings, now = new Date()) {
   c = c || {};
   const out = {
     name: str(c.name, 80), phone: str(c.phone, 30), date: str(c.date, 10), time: str(c.time, 5),
-    method: c.method === "delivery" ? "delivery" : "pickup", address: str(c.address, 200), comment: str(c.comment, 500),
+    method: c.method === "delivery" ? "delivery" : "pickup", address: str(c.address, 200), comment: str(c.comment, 500), zoneId: str(c.zoneId, 20),
   };
   const errors = [];
   if (out.name.length < 2) errors.push("Укажите имя");
@@ -35,8 +40,13 @@ function buildOrder({ catalog, orders, body, tgUser, now = new Date() }) {
   if (errors.length) return { error: errors.join(". ") };
   const lines = Array.isArray(cart.lines) ? cart.lines.slice(0, 50) : [];
   const first = isFirstOrder(orders, tgUser && tgUser.id, customer.phone);
-  const totals = computeTotals(catalog, { lines, addons: cart.addons || {} }, { promoCode: str(body.promoCode, 40), isFirstOrder: first });
+  const totals = computeTotals(catalog, { lines, addons: cart.addons || {} }, { promoCode: str(body.promoCode, 40), isFirstOrder: first, method: customer.method, zoneId: customer.zoneId });
   if (totals.errors.length) return { error: totals.errors.join(". ") + ". Обновите корзину." };
+  if (totals.deliveryError) return { error: totals.deliveryError };
+  // a zone's delivery time: today we only take slots the courier can still make
+  if (totals.delivery && customer.date === todayISO(now) && slotMin(customer.time) < minutesNow(now) + (totals.delivery.to || totals.delivery.from || 60) - 15) {
+    return { error: "К этому времени доставка в ваш район уже не успеет. Выберите время позже или другую дату." };
+  }
   if (!totals.lines.length) return { error: "Корзина пуста" };
   if (totals.promoError) return { error: totals.promoError + ". Уберите промокод в корзине и отправьте заявку ещё раз." };
   const cardText = cart.addons && cart.addons.card ? str(cart.cardText, 300) : "";
@@ -44,7 +54,7 @@ function buildOrder({ catalog, orders, body, tgUser, now = new Date() }) {
     createdAt: now.toISOString(), status: "new",
     name: customer.name, phone: customer.phone, date: customer.date, time: customer.time,
     method: customer.method, address: customer.address, comment: customer.comment, cardText,
-    totals: { lines: totals.lines, addons: totals.addons, subtotal: totals.subtotal, discount: totals.discount, total: totals.total, promo: totals.promo },
+    totals: { lines: totals.lines, addons: totals.addons, subtotal: totals.subtotal, discount: totals.discount, delivery: totals.delivery, total: totals.total, promo: totals.promo },
     tgUser: tgUser ? { id: tgUser.id, username: tgUser.username || "", name: [tgUser.first_name, tgUser.last_name].filter(Boolean).join(" ") } : null,
   };
   return { order };
@@ -58,18 +68,28 @@ function summaryText(o) {
     ...t.lines.map((l) => `• ${l.title} × ${l.qty} — ${formatRub(l.sum)}${l.choc && l.choc.length ? `\n   шоколад: ${l.choc.join(", ")}` : ""}`),
     ...t.addons.map((a) => `• ${a.title} × ${a.qty} — ${formatRub(a.sum)}`),
   ];
+  const d = t.delivery;
+  const where = o.method !== "delivery" ? "Самовывоз" : d ? `Доставка: ${d.title} — ${o.address}` : "Доставка: " + o.address;
   return [
     `${o.name}, ${o.phone}`,
-    `${o.method === "delivery" ? "Доставка: " + o.address : "Самовывоз"} · ${ruDate(o.date)} к ${o.time}`,
+    `${where} · ${ruDate(o.date)} к ${o.time}`,
     ...rows,
     t.discount ? `Скидка ${t.promo.percent}% (${t.promo.code}): −${formatRub(t.discount)}` : "",
-    `Итого: ${formatRub(t.total)}${o.method === "delivery" ? " + доставка" : ""}`,
+    d ? `Доставка (${d.title}${zoneTime(d) ? ", " + zoneTime(d) : ""}): ${d.free ? "бесплатно" : formatRub(d.price)}` : "",
+    `Итого: ${formatRub(t.total)}${o.method === "delivery" && !d ? " + доставка" : ""}`,
     o.cardText ? `Открытка: «${o.cardText}»` : "",
     o.comment ? `Пожелания: ${o.comment}` : "",
   ].filter(Boolean).join("\n");
 }
 
-function managerMessage(o, platform = "telegram") {
+/** Payment by transfer to the shop's card: what the manager should know right now. */
+function transferLine(o) {
+  if (o.paid) return "✅ <b>Оплата получена</b> (перевод на карту)";
+  if (o.transferClaimedAt) return "💳 <b>Клиент сообщил, что оплатил переводом.</b> Проверьте поступление в банке и нажмите «Оплата получена» в приложении.";
+  return o.transferMode === "after" ? "💳 Оплата переводом — после вашего подтверждения (кнопка «Подтвердить»: клиенту уйдут реквизиты)" : "💳 Оплата переводом на карту — клиент ещё не сообщил об оплате";
+}
+
+function managerMessage(o, platform = "telegram", emoji = "🍓") {
   const u = o.tgUser;
   let who = "—", label = "Telegram";
   if (platform === "max") {
@@ -80,9 +100,9 @@ function managerMessage(o, platform = "telegram") {
   }
   const pay = [
     o.bonusUsed ? `Оплачено бонусами: ${formatRub(o.bonusUsed)}\nК оплате: ${formatRub(o.toPay ?? Math.max(0, o.totals.total - o.bonusUsed))}` : "",
-    o.paid ? "✅ <b>Оплачен онлайн</b>" : o.payError ? "⚠️ Онлайн-оплата не создалась — возьмите оплату при подтверждении" : "",
+    o.payMethod === "transfer" ? transferLine(o) : o.paid ? "✅ <b>Оплачен онлайн</b>" : o.payError ? "⚠️ Онлайн-оплата не создалась — возьмите оплату при подтверждении" : "",
   ].filter(Boolean).join("\n");
-  return `🍓 <b>Новая заявка №${o.id}</b>${o.paid ? " · Оплачен ✅" : ""}\n\n${escHtml(summaryText(o))}${pay ? "\n" + pay : ""}\n\n${label}: ${who}\nТелефон: <a href="tel:${escHtml(o.phone.replace(/[^\d+]/g, ""))}">${escHtml(o.phone)}</a>`;
+  return `${emoji} <b>Новая заявка №${o.id}</b>${o.paid ? " · Оплачен ✅" : ""}\n\n${escHtml(summaryText(o))}${pay ? "\n" + pay : ""}\n\n${label}: ${who}\nТелефон: <a href="tel:${escHtml(o.phone.replace(/[^\d+]/g, ""))}">${escHtml(o.phone)}</a>`;
 }
 
-module.exports = { validateCustomer, buildOrder, isFirstOrder, summaryText, managerMessage, todayISO };
+module.exports = { validateCustomer, buildOrder, isFirstOrder, summaryText, managerMessage, transferLine, todayISO, minutesNow };
