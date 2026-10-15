@@ -211,3 +211,38 @@ test("gagulya seed: brand settings reach the app, demo pictures are allowed in p
   assert.equal(img.status, 200);
   app.server.close();
 });
+
+test("photo from the phone gallery: admin uploads, the picture is served and accepted in a product", async () => {
+  const { app, url } = await startApp();
+  const jpg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(200, 1)]);
+  const up = (init, body) => fetch(url + "/api/admin/upload", { method: "POST", headers: { "Content-Type": "image/jpeg", "X-Init-Data": init }, body });
+  assert.equal((await up(asUser(7), jpg)).status, 403);
+  assert.equal((await up(ADMIN, Buffer.from("not an image"))).status, 400);
+  const r = await up(ADMIN, jpg);
+  assert.equal(r.status, 200);
+  const { url: u } = await r.json();
+  assert.match(u, /^\/u\/[a-f0-9]{24}\.jpg$/);
+  const got = await fetch(url + u);
+  assert.equal(got.status, 200);
+  assert.equal(got.headers.get("content-type"), "image/jpeg");
+  const p = app.store.getCatalog().products[0];
+  const put = await req(url + `/api/admin/item/products/${p.id}`, "PUT", { images: [u, "/u/../../x.jpg"] }, ADMIN);
+  assert.deepEqual(put.data.images, [u]);
+  assert.equal((await req(url + "/api/admin/settings", "PUT", { banner: { title: "Т", text: "т", image: u } }, ADMIN)).status, 200);
+  assert.equal(app.store.getCatalog().settings.banner.image, u);
+  app.server.close();
+});
+
+test("Telegram build of the same shop: order and transfer work with a Telegram signature", async () => {
+  const tgm = require("../server/telegram");
+  const TG = "123:tg-token";
+  const { app, url } = await startApp({ messenger: "telegram", botToken: TG });
+  app.store.getCatalog().settings.transfer = TRANSFER;
+  const init = tgm.signInitData({ id: 7, first_name: "Анна" }, TG);
+  const cat = (await req(url + "/api/catalog", "GET")).data;
+  assert.equal(cat.platform, "telegram");
+  const r = await req(url + "/api/orders", "POST", order({ method: "delivery", zoneId: "zkui", address: "ул. Ленина, 1" }), init);
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.transfer.amount, 3900 + 400);
+  app.server.close();
+});

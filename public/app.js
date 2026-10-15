@@ -23,6 +23,10 @@
     "Тёмный": "#3b2418",
     "Карамельный": "#c98d45",
   };
+  // Shop logo marks drawn as lines (they follow the theme colour). "gf" — Flowers Gagulya, as on the shop sign.
+  const LOGO_MARKS = {
+    gf: `<svg class="logo-mark" viewBox="0 0 84 66" fill="none" stroke="currentColor" stroke-width="3.6" aria-hidden="true"><path d="M40 8A28 28 0 0 0 28 61.4"/><path d="M38.5 8H76M50 8V66M27 33H73M27 43H73M39 43V66"/></svg>`,
+  };
   const STATUS = { new: "Новая", work: "В работе", done: "Выполнена", cancel: "Отменена", pay: "Ждёт оплаты" };
   const STATUS_CLIENT = { new: "Принят", work: "Готовим", done: "Выполнен", cancel: "Отменён", pay: "Ждёт оплаты" };
 
@@ -704,13 +708,45 @@
       <label class="field"><span>Короткое описание</span><input class="input" name="short" value="${esc(p.short)}"></label>
       <label class="field"><span>Описание</span><textarea class="input" name="intro">${esc(p.intro)}</textarea></label>
       <label class="field"><span>Состав и детали (каждый пункт с новой строки)</span><textarea class="input" name="details" style="min-height:120px">${esc(p.details.join("\n"))}</textarea></label>
-      <label class="field"><span>Фото (ссылки, каждая с новой строки)</span><textarea class="input" name="images">${esc(p.images.join("\n"))}</textarea></label>
+      <div class="field"><span>Фото</span>
+        <div class="photo-grid" data-photos>${p.images.map(photoTile).join("")}<label class="photo-add"><input type="file" accept="image/*" multiple data-upload hidden><b>+</b><small>Добавить из галереи</small></label></div>
+        <div class="muted" style="font-size:12.5px;margin-top:6px">Первое фото — главное, его видно в каталоге. Стрелкой ‹ можно передвинуть фото левее.</div>
+        <details style="margin-top:8px"><summary class="muted" style="font-size:13px">Добавить фото по ссылке</summary>
+          <div style="display:flex;gap:8px;margin-top:8px"><input class="input" data-photo-link placeholder="https://…" style="min-height:42px"><button type="button" class="btn soft small" data-action="addPhotoLink">Добавить</button></div></details>
+      </div>
       <label class="field"><span>Сколько видов шоколада можно выбрать (0 — без выбора)</span><input class="input" name="chocolateChoices" type="number" min="0" max="6" value="${p.chocolateChoices || 0}"></label>
       <div class="field"><span>Категории</span>${d.categories.map((c) => `<label class="check" style="margin-top:8px;color:var(--text)"><input type="checkbox" name="cats" value="${esc(c.id)}" ${p.cats.includes(c.id) ? "checked" : ""}>${esc(c.title)}</label>`).join("")}</div>
       <label class="check" style="color:var(--text)"><input type="checkbox" name="hidden" ${p.hidden ? "checked" : ""}>Скрыть из каталога</label>
       <button class="btn block" style="margin-top:18px" type="submit">${isNew ? "Создать товар" : "Сохранить изменения"}</button>
       ${isNew ? "" : `<button class="btn ghost block" style="margin-top:10px" type="button" data-action="deleteProduct" data-id="${esc(p.id)}">Удалить товар</button>`}
       </form>`;
+  }
+  function photoTile(u) {
+    return `<div class="photo-tile" data-url="${esc(u)}">${imgTag(u, 240, "")}
+      <button type="button" class="pt-left" data-action="photoLeft" aria-label="Сделать левее">‹</button><button type="button" class="pt-del" data-action="photoDel" aria-label="Убрать фото">×</button></div>`;
+  }
+  /** Shrinks a photo from the phone (they are 3–10 MB) to ≤1600 px JPEG before sending; falls back to the original file. */
+  async function shrinkPhoto(file) {
+    try {
+      const url = URL.createObjectURL(file);
+      const im = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
+      const k = Math.min(1, 1600 / Math.max(im.naturalWidth, im.naturalHeight));
+      const c = document.createElement("canvas");
+      c.width = Math.round(im.naturalWidth * k); c.height = Math.round(im.naturalHeight * k);
+      c.getContext("2d").drawImage(im, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      const blob = await new Promise((res) => c.toBlob(res, "image/jpeg", 0.85));
+      if (blob) return blob;
+    } catch (e) { /* use the original */ }
+    return file;
+  }
+  async function uploadPhoto(file) {
+    const body = await shrinkPhoto(file);
+    if (body.size > 4e6) throw new Error("Фото слишком большое — выберите другое");
+    const res = await fetch("/api/admin/upload", { method: "POST", headers: { "Content-Type": body.type || "application/octet-stream", "X-Init-Data": INIT_DATA }, body });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || "Не удалось загрузить фото");
+    return data.url;
   }
   function adminCategories(d) {
     return `<button class="btn small" data-action="addCategory" style="margin-bottom:8px">Добавить категорию</button>
@@ -760,7 +796,10 @@
     return `${adminZones(s)}<h2 class="h2" style="font-size:22px">Магазин</h2><form data-form="settings">
       <label class="field"><span>Заголовок на главной</span><input class="input" name="banner.title" value="${esc(s.banner.title)}"></label>
       <label class="field"><span>Текст под заголовком</span><input class="input" name="banner.text" value="${esc(s.banner.text)}"></label>
-      <label class="field"><span>Фото на главной (ссылка)</span><input class="input" name="banner.image" value="${esc(s.banner.image)}"></label>
+      <div class="field"><span>Фото на главной</span>
+        <div style="display:grid;grid-template-columns:72px 1fr;gap:10px;align-items:center"><div class="photo-tile" style="width:72px;height:72px" data-banner-preview>${imgTag(s.banner.image, 240, "")}</div>
+        <label class="btn soft small" style="justify-self:start"><input type="file" accept="image/*" hidden data-upload-to="banner.image">Загрузить из галереи</label></div>
+        <input type="hidden" name="banner.image" value="${esc(s.banner.image)}"></div>
       <label class="field"><span>Телефон</span><input class="input" name="phone" value="${esc(s.phone)}"></label>
       <label class="field"><span>Адрес мастерской</span><input class="input" name="address" value="${esc(s.address)}"></label>
       <label class="field"><span>Режим работы</span><input class="input" name="hours" value="${esc(s.hours)}"></label>
@@ -1038,6 +1077,13 @@
     }
     if (act === "addZone") { $app.querySelector("[data-zones]").insertAdjacentHTML("beforeend", zoneRow()); const r = $app.querySelectorAll(".zone-row"); r[r.length - 1].querySelector("input").focus(); return; }
     if (act === "delZone") { el.closest(".zone-row").remove(); return; }
+    if (act === "photoDel") { el.closest(".photo-tile").remove(); return; }
+    if (act === "photoLeft") { const t = el.closest(".photo-tile"); const prev = t.previousElementSibling; if (prev && prev.classList.contains("photo-tile")) t.parentNode.insertBefore(t, prev); return; }
+    if (act === "addPhotoLink") {
+      const inp = $app.querySelector("[data-photo-link]"), u = inp.value.trim();
+      if (!/^https:\/\//.test(u)) return toast("Нужна ссылка, которая начинается с https://");
+      $app.querySelector("[data-photos] .photo-add").insertAdjacentHTML("beforebegin", photoTile(u)); inp.value = ""; return;
+    }
     if (act === "tMode") { const f = el.closest("form"); f.tMode.value = ds.m; f.querySelectorAll("[data-action=tMode]").forEach((b) => b.setAttribute("aria-pressed", b === el)); return; }
     if (act === "slot") { initCheckout().time = ds.t; delete state.checkout.errors.time; render(); return; }
     if (act === "shareContact") {
@@ -1167,6 +1213,25 @@
 
   document.addEventListener("change", async (ev) => {
     const t = ev.target;
+    if (t.dataset.upload !== undefined || t.dataset.uploadTo) {
+      const files = [...(t.files || [])].slice(0, 10);
+      t.value = "";
+      const add = t.dataset.uploadTo ? null : $app.querySelector("[data-photos] .photo-add");
+      for (const file of files) {
+        const ph = document.createElement("div"); ph.className = "photo-tile loading"; ph.innerHTML = "<span>Загружаем…</span>";
+        if (add) add.before(ph); else toast("Загружаем фото…");
+        try {
+          const url = await uploadPhoto(file);
+          if (add) ph.outerHTML = photoTile(url);
+          else {
+            const f = t.closest("form"); f.elements[t.dataset.uploadTo].value = url;
+            const pv = f.querySelector("[data-banner-preview]"); if (pv) pv.innerHTML = imgTag(url, 240, "");
+            toast("Фото загружено — нажмите «Сохранить настройки»");
+          }
+        } catch (e) { ph.remove(); toast(e.message); }
+      }
+      return;
+    }
     if (t.dataset.rename) await adminCall(`/api/admin/item/categories/${t.dataset.rename}`, "PUT", { title: t.value.trim() }, "categories");
     if (t.dataset.addonPrice) await adminCall(`/api/admin/item/addons/${t.dataset.addonPrice}`, "PUT", { price: Math.max(0, parseInt(t.value, 10) || 0) }, "extras");
   });
@@ -1180,7 +1245,7 @@
       const body = {
         title: fd.get("title").trim(), price: parseInt(fd.get("price"), 10) || 0,
         oldPrice: parseInt(fd.get("oldPrice"), 10) || null, short: fd.get("short").trim(), intro: fd.get("intro").trim(),
-        details: lines(fd.get("details")), images: lines(fd.get("images")), cats: fd.getAll("cats"),
+        details: lines(fd.get("details")), images: [...f.querySelectorAll("[data-photos] .photo-tile[data-url]")].map((x) => x.dataset.url), cats: fd.getAll("cats"),
         chocolateChoices: Math.max(0, Math.min(6, parseInt(fd.get("chocolateChoices"), 10) || 0)), hidden: fd.get("hidden") === "on",
       };
       const id = f.dataset.id;
@@ -1353,7 +1418,10 @@
     if (S.brand) document.title = S.brand;
     if (S.theme) document.documentElement.dataset.brand = S.theme;
     const mono = document.querySelector(".monogram");
-    if (S.monogram && mono) { mono.innerHTML = `${esc(S.monogram[0])}<i></i>${esc(S.monogram[1])}`; mono.setAttribute("aria-label", S.brand + " — на главную"); }
+    if (mono && (S.logoMark || S.monogram)) {
+      mono.innerHTML = LOGO_MARKS[S.logoMark] || `${esc(S.monogram[0])}<i></i>${esc(S.monogram[1])}`;
+      mono.setAttribute("aria-label", S.brand + " — на главную");
+    }
     const tel = S.phone.replace(/[^\d+]/g, "");
     document.getElementById("topLeft").href = "tel:" + tel;
     updateBadge();

@@ -106,6 +106,17 @@ const BRIDGE_STUB = `(function(){
   await p2.locator('.zone-row').first().locator('[data-action=delZone]').click();
   await p2.click('text=Сохранить районы'); await p2.waitForTimeout(600);
   console.log('zones saved:', app.store.getCatalog().settings.zones.map((z) => `${z.name} ${z.price}₽ ${z.from}-${z.to}`));
+  // owner adds a photo from the phone gallery to a product
+  await p2.goto(base + '/#/admin/edit/g2'); await p2.waitForSelector('[data-photos]');
+  await p2.setInputFiles('[data-upload]', [path.join(__dirname, '..', 'public', 'demo', 'gagulya-5.jpg'), path.join(__dirname, '..', 'public', 'demo', 'gagulya-7.jpg')]);
+  await p2.waitForFunction(() => document.querySelectorAll('[data-photos] .photo-tile[data-url^="/u/"]').length === 2, null, { timeout: 8000 });
+  await p2.click('[data-photos] .photo-tile >> nth=2 >> [data-action=photoLeft]');
+  await p2.click('[data-photos] .photo-tile >> nth=1 >> [data-action=photoDel]');
+  await p2.locator('[data-photos]').scrollIntoViewIfNeeded(); await snap(p2, '11-admin-photos');
+  await p2.click('text=Сохранить изменения'); await p2.waitForTimeout(700);
+  const g2 = app.store.getCatalog().products.find((x) => x.id === 'g2');
+  console.log('product photos after upload:', g2.images);
+  console.log('uploaded file served:', (await fetch(base + g2.images[1])).status);
   // owner edits card
   await p2.goto(base + '/#/admin/loyalty'); await p2.waitForSelector('form[data-form=transfer]');
   await p2.locator('form[data-form=transfer]').scrollIntoViewIfNeeded(); await snap(p2, '08-admin-transfer');
