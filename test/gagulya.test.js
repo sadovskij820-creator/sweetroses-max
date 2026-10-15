@@ -293,3 +293,20 @@ test("staff: owner invites a manager by a one-time link; manager sees orders, no
   assert.doesNotMatch(JSON.stringify((await req(url + "/api/catalog", "GET")).data), /invites|"staff"/);
   app.server.close();
 });
+
+test("staff: an invited co-owner gets full access (payment card, settings, staff)", async () => {
+  const { app, url } = await startApp();
+  app.bot.getUsername = () => "gagulya_flowers_bot";
+  const inv = await req(url + "/api/admin/staff/invite", "POST", { role: "owner" }, ADMIN);
+  const code = inv.data.link.split("start=")[1];
+  assert.match(app.onBotStart({ id: 77, first_name: "Гагуля" }, code).text, /владелец/);
+  const G = asUser(77);
+  const me = (await req(url + "/api/me", "GET", null, G)).data;
+  assert.deepEqual([me.isAdmin, me.isOwner], [true, true]);
+  assert.equal((await req(url + "/api/admin/settings", "PUT", { transfer: TRANSFER }, G)).status, 200);
+  assert.equal((await req(url + "/api/admin/staff", "GET", null, G)).status, 200);
+  assert.equal((await req(url + "/api/admin/staff/77", "DELETE", null, G)).status, 400); // can't remove yourself
+  assert.equal((await req(url + "/api/admin/staff/77", "DELETE", null, ADMIN)).status, 200);
+  assert.equal((await req(url + "/api/me", "GET", null, G)).data.isAdmin, false);
+  app.server.close();
+});

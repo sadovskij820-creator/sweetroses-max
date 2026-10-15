@@ -127,7 +127,7 @@ const BRIDGE_STUB = `(function(){
 
   // staff: invite a manager
   await p2.goto(base + '/#/admin/staff'); await p2.waitForSelector('[data-action=staffInvite]');
-  await p2.click('[data-action=staffInvite]'); await p2.waitForSelector('.src-link');
+  await p2.click('[data-action=staffInvite][data-role=manager]'); await p2.waitForSelector('.src-link');
   const link = await p2.locator('.src-link').innerText();
   console.log('invite link:', link);
   console.log('accept:', app.onBotStart({ id: 55, first_name: 'Маша' }, link.split('start=')[1]).text.trim().split('\n')[0]);

@@ -945,18 +945,18 @@
   }
   function adminStaff(d) {
     const dt = (iso) => new Intl.DateTimeFormat("ru-RU", { timeZone: TZ, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(iso));
-    return `<p class="muted" style="font-size:13.5px;margin-top:0">Менеджеры видят заявки, клиентов и товары и получают заявки в чат с ботом. Настройки, оплату и сотрудников меняет только владелец.</p>
-      <button class="btn block" data-action="staffInvite">+ Пригласить менеджера</button>
-      ${state.admin.inviteLink ? `<div class="info-card" style="margin-top:12px"><p><b>Ссылка-приглашение готова</b></p>
+    return `<p class="muted" style="font-size:13.5px;margin-top:0"><b>Владелец</b> — полный доступ: заявки, товары, оплата (карта), настройки, сотрудники. <b>Менеджер</b> — заявки, клиенты и товары; карту и настройки не видит. Заявки приходят в чат с ботом обоим.</p>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px"><button class="btn" data-action="staffInvite" data-role="owner">+ Владельца</button><button class="btn soft" data-action="staffInvite" data-role="manager">+ Менеджера</button></div>
+      ${state.admin.inviteLink ? `<div class="info-card" style="margin-top:12px"><p><b>Ссылка-приглашение готова${state.admin.inviteRole === "owner" ? " — роль: владелец" : " — роль: менеджер"}</b></p>
         <p class="muted" style="font-size:13px;margin-top:4px">Отправьте её сотруднику. Он откроет её и нажмёт «Старт» — и сразу станет менеджером. Ссылка одноразовая, действует сутки.</p>
         <div class="src-link" style="margin-top:8px">${esc(state.admin.inviteLink)}</div>
         <div style="display:flex;gap:8px;margin-top:10px"><button class="btn small" data-action="shareInvite">Отправить</button><button class="btn soft small" data-action="copyText" data-text="${esc(state.admin.inviteLink)}">Скопировать</button></div></div>` : ""}
       <h2 class="h2" style="font-size:22px">Кто имеет доступ</h2>
       ${d.owners.map((o) => `<div class="cust-row"><span class="av">${esc((o.name || "?").slice(0, 1))}</span><span class="mid"><b>${esc(o.name)}</b><small>${o.username ? "@" + esc(o.username) : "ID " + esc(String(o.id))}</small></span><span class="rt"><span class="seg-badge seg-regular">Владелец</span></span></div>`).join("")}
-      ${d.staff.map((m) => `<div class="cust-row"><span class="av">${esc((m.name || "?").slice(0, 1))}</span><span class="mid"><b>${esc(m.name)}</b><small>${m.username ? "@" + esc(m.username) + " · " : ""}менеджер с ${ddmm(m.addedAt)}</small>
+      ${d.staff.map((m) => `<div class="cust-row"><span class="av">${esc((m.name || "?").slice(0, 1))}</span><span class="mid"><b>${esc(m.name)}</b><small>${m.username ? "@" + esc(m.username) + " · " : ""}${m.role === "owner" ? "владелец" : "менеджер"} с ${ddmm(m.addedAt)}</small>
         <label class="check" style="margin:6px 0 0;font-size:12.5px"><input type="checkbox" data-action="staffNotify" data-id="${esc(String(m.id))}" ${m.notify !== false ? "checked" : ""}>Получает заявки в чат</label></span>
-        <span class="rt"><button class="btn ghost small" data-action="staffRemove" data-id="${esc(String(m.id))}" data-name="${esc(m.name)}">Убрать</button></span></div>`).join("") || `<p class="muted">Менеджеров пока нет.</p>`}
-      ${d.invites.length ? `<h2 class="h2" style="font-size:22px">Неиспользованные приглашения</h2>${d.invites.map((x) => `<div class="addon"><span class="t">Действует до ${dt(x.expiresAt)}</span><span class="p"><button class="btn ghost small" data-action="copyText" data-text="${esc(x.link)}">Скопировать</button> <button class="icon-x" data-action="inviteDel" data-code="${esc(x.code)}" aria-label="Отменить">×</button></span></div>`).join("")}` : ""}`;
+        <span class="rt">${m.role === "owner" ? `<span class="seg-badge seg-regular" style="display:block;margin-bottom:6px">Владелец</span>` : ""}<button class="btn ghost small" data-action="staffRemove" data-id="${esc(String(m.id))}" data-name="${esc(m.name)}">Убрать</button></span></div>`).join("") || `<p class="muted">Менеджеров пока нет.</p>`}
+      ${d.invites.length ? `<h2 class="h2" style="font-size:22px">Неиспользованные приглашения</h2>${d.invites.map((x) => `<div class="addon"><span class="t">${x.role === "owner" ? "Владелец" : "Менеджер"} · до ${dt(x.expiresAt)}</span><span class="p"><button class="btn ghost small" data-action="copyText" data-text="${esc(x.link)}">Скопировать</button> <button class="icon-x" data-action="inviteDel" data-code="${esc(x.code)}" aria-label="Отменить">×</button></span></div>`).join("")}` : ""}`;
   }
   function adminTransfer(d) {
     const T = d.transferResolved || {};
@@ -1098,8 +1098,8 @@
       return;
     }
     if (act === "staffInvite") {
-      const r = await adminCall("/api/admin/staff/invite", "POST", {}, null);
-      if (r) { state.admin.inviteLink = r.link; state.admin.data = r; state.admin.tab = "staff"; render(); }
+      const r = await adminCall("/api/admin/staff/invite", "POST", { role: ds.role }, null);
+      if (r) { state.admin.inviteLink = r.link; state.admin.inviteRole = ds.role; state.admin.data = r; state.admin.tab = "staff"; render(); }
       return;
     }
     if (act === "shareInvite") return shareLink(`Приглашение в управление ${state.catalog.settings.brand}: откройте ссылку и нажмите «Старт»`, state.admin.inviteLink);
