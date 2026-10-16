@@ -57,7 +57,10 @@ function createApp(opts = {}) {
   /* ---------- loyalty, customers, payments ---------- */
   const loyal = () => LY.loyaltyOf(store.getCatalog().settings);
   const paySettings = () => Object.assign({ enabled: false, provider: "demo" }, store.getCatalog().settings.payments || {});
-  const paymentsOn = () => paySettings().enabled && LY.on(loyal(), "payments");
+  // ONLINE_PAYMENTS=off (Amvera → «Переменные») — the shop's tariff has no online payment (e.g. Бизнес, Gagulya):
+  // no card payment, no «Демо»/«ЮKassa» in the admin; payment by transfer to the shop's card still works.
+  const onlinePayAllowed = opts.onlinePayments !== undefined ? !!opts.onlinePayments : !/^(off|0|no|false)$/i.test(String(process.env.ONLINE_PAYMENTS || ""));
+  const paymentsOn = () => onlinePayAllowed && paySettings().enabled && LY.on(loyal(), "payments");
   /* Payment by transfer to the shop's own card / SBP phone. The owner enters the details in the admin; the manager confirms receipt. */
   const transferSettings = () => Object.assign({ enabled: false, mode: "now", card: "", phone: "", bank: "", holder: "", note: "" }, store.getCatalog().settings.transfer || {});
   const transferOn = () => { const t = transferSettings(); return !!(t.enabled && (t.card || t.phone)) && !paymentsOn(); };
@@ -620,7 +623,7 @@ function createApp(opts = {}) {
     return out;
   }
 
-  on("GET", "/api/admin/catalog", ({ user }) => Object.assign({}, store.getCatalog(), isOwner(user) ? {} : { settings: Object.assign({}, store.getCatalog().settings, { transfer: undefined, staff: undefined, invites: undefined }) }, { loyaltyResolved: loyal(), paymentsResolved: paySettings(), transferResolved: isOwner(user) ? transferSettings() : null, env: { yookassa: !!(process.env.YOOKASSA_SHOP_ID && process.env.YOOKASSA_SECRET_KEY) } }), { admin: true });
+  on("GET", "/api/admin/catalog", ({ user }) => Object.assign({}, store.getCatalog(), isOwner(user) ? {} : { settings: Object.assign({}, store.getCatalog().settings, { transfer: undefined, staff: undefined, invites: undefined }) }, { loyaltyResolved: loyal(), paymentsResolved: Object.assign({}, paySettings(), onlinePayAllowed ? {} : { enabled: false }), onlinePayAllowed, transferResolved: isOwner(user) ? transferSettings() : null, env: { yookassa: !!(process.env.YOOKASSA_SHOP_ID && process.env.YOOKASSA_SECRET_KEY) } }), { admin: true });
   on("GET", "/api/admin/orders", () => ({ orders: store.getOrders().list.slice(-200).reverse().map((o) => ({ ...o, summary: summaryText(o) })) }), { admin: true });
   on("PATCH", "/api/admin/orders/:id", ({ params, body }) => {
     const o = store.getOrders().list.find((x) => String(x.id) === params.id);
@@ -833,7 +836,7 @@ function createApp(opts = {}) {
       if (next.enabled && !next.card && !next.phone) throw httpError(400, "Укажите номер карты или телефон для СБП — иначе клиенту некуда платить");
       s.transfer = Object.assign(cur, next);
     }
-    if (body.payments && typeof body.payments === "object") {
+    if (body.payments && typeof body.payments === "object" && onlinePayAllowed) {
       const cur = Object.assign({ enabled: false, provider: "demo" }, s.payments || {});
       if ("enabled" in body.payments) cur.enabled = !!body.payments.enabled;
       if (["demo", "yookassa"].includes(body.payments.provider)) cur.provider = body.payments.provider;

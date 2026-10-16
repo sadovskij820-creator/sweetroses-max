@@ -1062,7 +1062,7 @@
     const L = d.loyaltyResolved, P = d.paymentsResolved;
     return `<form data-form="loyalty">
       <h2 class="h2" style="font-size:22px;margin-top:6px">Функции</h2>
-      ${Object.entries(FEATURE_NAMES).map(([k, t]) => `<label class="toggle-row"><span>${t}</span><input type="checkbox" name="f_${k}" ${L.features[k] ? "checked" : ""}></label>`).join("")}
+      ${Object.entries(FEATURE_NAMES).filter(([k]) => k !== "payments" || d.onlinePayAllowed !== false).map(([k, t]) => `<label class="toggle-row"><span>${t}</span><input type="checkbox" name="f_${k}" ${L.features[k] ? "checked" : ""}></label>`).join("")}
       <h2 class="h2" style="font-size:22px">Бонусы</h2>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
         <label class="field"><span>Оплата бонусами, до % заказа</span><input class="input" name="maxPayPercent" type="number" min="0" max="100" value="${L.maxPayPercent}"></label>
@@ -1084,11 +1084,11 @@
         <label class="field"><span>Другу, бонусов</span><input class="input" name="friendBonus" type="number" min="0" value="${L.referral.friendBonus}"></label>
         <label class="field"><span>Пригласившему, бонусов</span><input class="input" name="referrerBonus" type="number" min="0" value="${L.referral.referrerBonus}"></label>
       </div>
-      <h2 class="h2" style="font-size:22px">Оплата в приложении</h2>
+      ${d.onlinePayAllowed === false ? "" : `<h2 class="h2" style="font-size:22px">Оплата в приложении</h2>
       <label class="toggle-row"><span>Принимать оплату онлайн</span><input type="checkbox" name="payEnabled" ${P.enabled ? "checked" : ""}></label>
       <div class="seg" style="margin-top:10px"><button type="button" data-action="payProvider" data-p="demo" aria-pressed="${P.provider === "demo"}">Демо</button><button type="button" data-action="payProvider" data-p="yookassa" aria-pressed="${P.provider === "yookassa"}">ЮKassa</button></div>
       <input type="hidden" name="provider" value="${esc(P.provider)}">
-      <p class="muted" style="font-size:12.5px;margin-top:8px">${P.provider === "demo" ? "Демо: оплата без настоящих денег — чтобы показать, как это работает." : d.env.yookassa ? "ЮKassa подключена. Деньги приходят прямо на счёт магазина. Адрес для уведомлений в кабинете ЮKassa: …/api/pay/yookassa" : "ЮKassa не подключена: ключи магазина (YOOKASSA_SHOP_ID и YOOKASSA_SECRET_KEY) добавляются в настройки сервера."}</p>
+      <p class="muted" style="font-size:12.5px;margin-top:8px">${P.provider === "demo" ? "Демо: оплата без настоящих денег — чтобы показать, как это работает." : d.env.yookassa ? "ЮKassa подключена. Деньги приходят прямо на счёт магазина. Адрес для уведомлений в кабинете ЮKassa: …/api/pay/yookassa" : "ЮKassa не подключена: ключи магазина (YOOKASSA_SHOP_ID и YOOKASSA_SECRET_KEY) добавляются в настройки сервера."}</p>`}
       <button class="btn block" type="submit" style="margin-top:16px">Сохранить</button></form>
       <p class="muted" style="font-size:12.5px;margin-top:12px">Оплата переводом на карту — во вкладке «💳 Оплата».</p>`;
   }
@@ -1517,7 +1517,7 @@
       const body = {
         loyalty: { features, maxPayPercent: +fd.get("maxPayPercent"), burnDays: +fd.get("burnDays"), burnRemindDays: +fd.get("burnRemindDays"), datesRemindDays: +fd.get("datesRemindDays"), levels,
           referral: { friendBonus: +fd.get("friendBonus"), referrerBonus: +fd.get("referrerBonus") }, welcomeBonus: +fd.get("welcomeBonus"), giftBonus: +fd.get("giftBonus"), reviewBonus: +fd.get("reviewBonus") },
-        payments: { enabled: fd.get("payEnabled") === "on", provider: fd.get("provider") },
+        payments: fd.has("provider") ? { enabled: fd.get("payEnabled") === "on", provider: fd.get("provider") } : undefined,
       };
       if (await adminCall("/api/admin/settings", "PUT", body, "loyalty")) { toast("Сохранено"); loadProfile(); }
       return;
