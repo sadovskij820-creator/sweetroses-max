@@ -11,6 +11,8 @@ const { fetchStore, mergeProducts } = require("./tilda");
 const { findPromo, formatRub, zoneTime } = require("../public/pricing.js");
 const LY = require("./loyalty");
 const { createPayments } = require("./payments");
+const { importCatalog } = require("./importer");
+const BK = require("./backup");
 const qrcode = require("./vendor/qrcode.js");
 const crypto = require("crypto");
 
@@ -43,7 +45,11 @@ function createApp(opts = {}) {
     // SEED=gagulya starts a new shop from seed/gagulya.seed.json (only used on the very first start, when /data is empty)
     seedFile: opts.seedFile ?? path.join(__dirname, "..", "seed", (/^[a-z0-9-]{1,40}$/.test(process.env.SEED || "") ? process.env.SEED : "catalog") + ".seed.json"),
   };
+  // restore*.zip put into /data (Amvera → «Data») is unpacked before the data is read — see backup.js
+  const restored = opts.noRestore ? [] : BK.restoreOnStart(config.dataDir, opts.log || console);
   const store = createStore(config.dataDir, config.seedFile);
+  // <name>.import.json next to the seed adds the real catalog once to a shop that is already running (see importer.js)
+  importCatalog(store, config.dataDir, opts.importFile !== undefined ? opts.importFile : opts.seedFile ? null : config.seedFile.replace(/\.seed\.json$/, ".import.json"), opts.log || console);
   const bot = opts.bot !== undefined ? opts.bot : config.botToken ? M.createBot({ token: config.botToken, webAppUrl: process.env.WEBAPP_URL || store.getCatalog().settings.webAppUrl || "" }) : null;
   const log = opts.log || console;
   const orderTimes = new Map(); // rate limit per user/ip
@@ -123,6 +129,8 @@ function createApp(opts = {}) {
     if (u) {
       let startParam = "";
       try { startParam = new URLSearchParams(M.extractWebAppData ? M.extractWebAppData(init) : init).get("start_param") || ""; } catch (e) { /* none */ }
+      // opened by the bot's button: Telegram buttons don't pass start_param, the app sends it from its own address (?start=…)
+      if (!startParam) { const h = String(req.headers["x-start-param"] || ""); if (/^[A-Za-z0-9_-]{1,64}$/.test(h)) startParam = h; }
       return Object.assign(u, { platform: messenger, startParam });
     }
     if (config.devMode) return { id: config.adminIds[0] || 1, first_name: "Dev", platform: messenger };
@@ -181,6 +189,10 @@ function createApp(opts = {}) {
     if (st.gift && findGift(st.gift)) Object.assign(res, { greeting: "🎁 Вам открытка с подарком! Нажмите кнопку, чтобы её открыть.", button: "Открыть открытку" });
     else if (product && st.hint) Object.assign(res, { greeting: `💝 Вам намекают на подарок: «${product.title}». Нажмите кнопку, чтобы посмотреть.`, button: "Посмотреть подарок" });
     else if (product) Object.assign(res, { greeting: `Вам прислали «${product.title}». Нажмите кнопку, чтобы посмотреть.`, button: "Посмотреть" });
+    else if (st.review) {
+      const L = loyal(), b = LY.on(L, "reviews") && LY.on(L, "bonuses") ? L.reviewBonus : 0;
+      Object.assign(res, { greeting: `Здравствуйте! 💐 Спасибо, что выбрали ${store.getCatalog().settings.brand || "нас"}.\n\nРасскажите, как вам букет — это займёт минуту${b ? `, а мы подарим <b>${b} бонусов</b> на следующий заказ` : ""}. Нажмите кнопку ниже 👇`, button: "⭐ Оставить отзыв" });
+    }
     else if (payload === "save") Object.assign(res, { greeting: "✅ Готово — магазин сохранён у вас в чатах. Здесь будут статусы заказов и бонусы. Нажмите кнопку, чтобы вернуться в магазин.", button: "Открыть магазин" });
     return res;
   }
@@ -195,6 +207,7 @@ function createApp(opts = {}) {
     return {
       platform: messenger,
       loyalty: { features: L.features, maxPayPercent: L.maxPayPercent, levels: L.levels, referral: L.referral, burnDays: L.burnDays, welcomeBonus: L.welcomeBonus, giftBonus: L.giftBonus },
+      reviews: LY.on(L, "reviews") ? Object.assign(reviewsSummary(), { bonus: LY.on(L, "bonuses") ? L.reviewBonus : 0 }) : null,
       payments: { enabled: paymentsOn(), provider: paySettings().provider },
       transfer: { enabled: transferOn(), mode: transferSettings().mode },
       categories: cats,
@@ -263,6 +276,7 @@ function createApp(opts = {}) {
       }
       if (st.gift && findGift(st.gift)) start.gift = st.gift;
       if (st.paid) start.paid = st.paid;
+      if (st.review) start.review = true;
     }
     return { isAdmin: isAdmin(user), isOwner: isOwner(user), platform: messenger, startParam: user ? user.startParam || "" : "", start, user: user ? { id: user.id, first_name: user.first_name } : null };
   });
@@ -481,6 +495,114 @@ function createApp(opts = {}) {
     return { url: "/u/" + name };
   }, { admin: true, raw: true });
 
+  /* ---------- reviews (made 16.10.2026): a card with a QR code goes into every bouquet → «Как вам букет?» ----------
+     The customer gets the bonus for any honest review (good or bad) in the app — never for a review on 2GIS.
+     4–5 stars wait for the owner's approval, then appear in «Отзывы»; the customer is offered to share the text in 2GIS too.
+     1–3 stars are not published: they go straight to the managers' chat, so the shop can fix things first. */
+  const RV = () => store.getReviews();
+  const REVIEW_SOURCE = { slug: "otzyv", title: "Вкладыш «Оцените букет» (отзывы)" };
+  const REVIEW_BONUS_DAYS = 30; // one review bonus per person per 30 days
+  const reviewPublic = (r) => ({ id: r.id, name: r.name, rating: r.rating, text: r.text, photos: r.photos, at: r.at, reply: r.reply || "" });
+  function reviewsSummary() {
+    const pub = RV().list.filter((r) => r.status === "approved");
+    const avg = pub.length ? Math.round((pub.reduce((s, r) => s + r.rating, 0) / pub.length) * 10) / 10 : 0;
+    return { count: pub.length, avg, latest: pub.slice(0, 3).map(reviewPublic) };
+  }
+  /** «Оставить отзыв» page of the shop in 2GIS: set by the owner, or made from its 2GIS card link (…/firm/<id>). */
+  function reviewLink2gis() {
+    const s = store.getCatalog().settings;
+    if (s.review2gis) return s.review2gis;
+    const m = /^(https:\/\/2gis\.ru\/[a-z-]+\/firm\/\d+)/.exec(s.map2gis || "");
+    return m ? m[1] + "/tab/reviews" : "";
+  }
+  function ensureReviewSource() {
+    const S = store.getCatalog().settings;
+    S.sources = S.sources || [];
+    if (!S.sources.some((x) => x.slug === REVIEW_SOURCE.slug)) { S.sources.push(Object.assign({}, REVIEW_SOURCE)); store.setCatalog(store.getCatalog()); }
+  }
+  // the bot CHAT (?start=), in Telegram too: it works without a «main mini app» in BotFather and keeps the chat for bonus messages
+  const reviewCardLink = () => chatLink("rv_1-s_" + REVIEW_SOURCE.slug);
+  const reviewPhotoCount = new Map(); // user id → { day, n } — customers may add a few photos a day, not fill the disk
+  const escH = (t) => String(t).replace(/[&<>]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[ch]));
+
+  on("GET", "/api/reviews", () => {
+    if (!LY.on(loyal(), "reviews")) return { list: [], count: 0, avg: 0 };
+    const pub = RV().list.filter((r) => r.status === "approved");
+    return Object.assign(reviewsSummary(), { list: pub.slice(0, 100).map(reviewPublic) });
+  });
+  on("POST", "/api/reviews/photo", ({ user, body }) => {
+    needUser(user);
+    if (!Buffer.isBuffer(body) || !body.length) throw httpError(400, "Фото не получено");
+    const kind = imageKind(body);
+    if (!kind) throw httpError(400, "Это не фото. Подходят JPG, PNG и WebP");
+    const day = LY.todayLocal(new Date()), k = String(user.id);
+    const cnt = reviewPhotoCount.get(k);
+    const n = cnt && cnt.day === day ? cnt.n : 0;
+    if (n >= 6) throw httpError(429, "На сегодня фото достаточно — отправьте отзыв так");
+    reviewPhotoCount.set(k, { day, n: n + 1 });
+    fs.mkdirSync(uploadsDir, { recursive: true });
+    const name = crypto.randomBytes(12).toString("hex") + "." + kind;
+    fs.writeFileSync(path.join(uploadsDir, name), body);
+    return { url: "/u/" + name };
+  }, { raw: true });
+  on("POST", "/api/reviews", async ({ user, body }) => {
+    needUser(user);
+    const L = loyal();
+    if (!LY.on(L, "reviews")) throw httpError(400, "Отзывы сейчас выключены");
+    const rating = Math.round(Number(body.rating));
+    if (!(rating >= 1 && rating <= 5)) throw httpError(400, "Поставьте оценку — от 1 до 5 звёзд");
+    const text = String(body.text || "").trim().slice(0, 1500);
+    if (rating <= 3 && text.length < 3) throw httpError(400, "Расскажите, пожалуйста, что не понравилось — мы обязательно разберёмся");
+    const mine = RV().list.filter((r) => String(r.userId) === String(user.id));
+    if (mine.some((r) => Date.now() - new Date(r.at) < 60e3)) throw httpError(429, "Отзыв уже отправлен — спасибо!");
+    const photos = (Array.isArray(body.photos) ? body.photos : []).map(String).filter((u) => /^\/u\//.test(u) && UPLOAD_RE.test(u.slice(3))).slice(0, 3);
+    const c = customers.touch(user, user.startParam);
+    if (body.consent) c.consent = true;
+    const last = myOrders(user.id).slice(-1)[0];
+    const r = {
+      id: crypto.randomBytes(5).toString("hex"), userId: String(user.id), name: (c.name || user.first_name || "Покупатель").split(" ")[0].slice(0, 40),
+      username: user.username || c.username || "", phone: (last && last.phone) || c.phone || "", rating, text, photos, at: new Date().toISOString(),
+      status: rating >= 4 ? "pending" : "private", orderId: last ? last.id : null,
+    };
+    // the bonus: for any review, at most once in 30 days
+    let bonus = 0;
+    const lastBonus = mine.filter((x) => x.bonus).sort((a, b) => b.at.localeCompare(a.at))[0];
+    if (LY.on(L, "bonuses") && L.reviewBonus > 0 && (!lastBonus || Date.now() - new Date(lastBonus.at) > REVIEW_BONUS_DAYS * 864e5)) {
+      customers.addBonus(c, L.reviewBonus, "review", { note: "Спасибо за отзыв" });
+      bonus = r.bonus = L.reviewBonus;
+    }
+    store.saveCustomers();
+    RV().list.unshift(r); if (RV().list.length > 2000) RV().list.length = 2000; store.saveReviews();
+    const who = [escH(r.name), r.username ? "@" + escH(r.username) : "", r.phone ? escH(r.phone) : ""].filter(Boolean).join(" · ");
+    const stars = "★".repeat(rating) + "☆".repeat(5 - rating);
+    notify(rating <= 3
+      ? `⚠️ <b>Клиент недоволен</b> — ${stars}\n${who}${r.orderId ? `\nЗаказ №${r.orderId}` : ""}\n\n«${escH(text)}»\n\nСвяжитесь с ним, пока он не написал об этом в 2ГИС. Отзыв не опубликован.`
+      : `⭐ <b>Новый отзыв</b> — ${stars}\n${who}\n\n${text ? "«" + escH(text) + "»" : "(без текста)"}${photos.length ? `\n📷 Фото: ${photos.length}` : ""}\n\nОпубликовать: шестерёнка → «⭐ Отзывы».`).catch(() => {});
+    return { ok: true, id: r.id, bonus, status: r.status, link2gis: rating >= 4 ? reviewLink2gis() : "" };
+  });
+  /* admin: moderation and the QR for the card in the bouquet */
+  on("GET", "/api/admin/reviews", () => {
+    ensureReviewSource();
+    const src = sourcesReport().find((x) => x.slug === REVIEW_SOURCE.slug) || {};
+    return { list: RV().list.slice(0, 300), link: reviewCardLink(), bonus: loyal().reviewBonus, enabled: LY.on(loyal(), "reviews"), link2gis: reviewLink2gis(), custom2gis: store.getCatalog().settings.review2gis || "",
+      fromCard: { customers: src.customers || 0, orders: src.orders || 0, revenue: src.revenue || 0 } };
+  }, { admin: true });
+  on("PATCH", "/api/admin/reviews/:id", ({ params, body }) => {
+    const r = RV().list.find((x) => x.id === params.id);
+    if (!r) throw httpError(404, "Отзыв не найден");
+    if (["approved", "hidden", "pending", "private"].includes(body.status)) r.status = body.status;
+    if ("reply" in body) r.reply = String(body.reply || "").trim().slice(0, 1000);
+    store.saveReviews();
+    return { ok: true };
+  }, { admin: true });
+  on("DELETE", "/api/admin/reviews/:id", ({ params }) => {
+    const before = RV().list.length;
+    RV().list = RV().list.filter((x) => x.id !== params.id);
+    if (RV().list.length === before) throw httpError(404, "Отзыв не найден");
+    store.saveReviews();
+    return { ok: true };
+  }, { admin: true });
+
   const PRODUCT_FIELDS = { title: "s", short: "s", intro: "s", details: "a", images: "a", cats: "a", price: "n", oldPrice: "n?", chocolateChoices: "n", hidden: "b" };
   const OTHER_FIELDS = { categories: { title: "s", hidden: "b" }, addons: { title: "s", price: "n", hidden: "b" } };
   function pick(body, spec) {
@@ -665,6 +787,7 @@ function createApp(opts = {}) {
     const arr = (v) => (Array.isArray(v) ? v : []).map((x) => str(x, 600)).filter(Boolean).slice(0, 20);
     if (body.banner) s.banner = { title: str(body.banner.title, 120), text: str(body.banner.text, 200), image: okImage(body.banner.image || "") ? str(body.banner.image, 500) : s.banner.image };
     for (const k of ["phone", "address", "hours", "successText"]) if (k in body) s[k] = str(body[k], 500);
+    if ("review2gis" in body) { const u = str(body.review2gis, 300); if (u && !/^https:\/\/(2gis\.ru|go\.2gis\.com)\//.test(u)) throw httpError(400, "Нужна ссылка на 2ГИС: https://2gis.ru/…"); s.review2gis = u; }
     if ("about" in body) s.about = arr(body.about);
     if ("delivery" in body) s.delivery = arr(body.delivery);
     if ("timeSlots" in body) { const t = arr(body.timeSlots).filter((x) => /^\d{1,2}:\d{2}$/.test(x)); if (t.length) s.timeSlots = t; }
@@ -680,6 +803,7 @@ function createApp(opts = {}) {
       if ("datesRemindDays" in b) next.datesRemindDays = num(b.datesRemindDays, 1, 14, cur.datesRemindDays);
       if ("welcomeBonus" in b) next.welcomeBonus = num(b.welcomeBonus, 0, 10000, cur.welcomeBonus);
       if ("giftBonus" in b) next.giftBonus = num(b.giftBonus, 0, 10000, cur.giftBonus);
+      if ("reviewBonus" in b) next.reviewBonus = num(b.reviewBonus, 0, 10000, cur.reviewBonus);
       if (b.referral) next.referral = { friendBonus: num(b.referral.friendBonus, 0, 10000, cur.referral.friendBonus), referrerBonus: num(b.referral.referrerBonus, 0, 10000, cur.referral.referrerBonus) };
       if (Array.isArray(b.levels)) {
         const lv = b.levels.slice(0, 5).map((x) => ({ name: str(x.name, 30), from: num(x.from, 0, 1e7, 0), percent: num(x.percent, 0, 50, 0) })).filter((x) => x.name);
@@ -773,6 +897,63 @@ function createApp(opts = {}) {
     if (!sent.length) throw httpError(400, "Не удалось отправить. Напишите боту /start с нужного аккаунта и проверьте ID в настройках.");
     return { ok: true, sent };
   }, { admin: true });
+
+  /* ---------- night backups (backup.js): /data/backups + the owner's bot chat ---------- */
+  const bkStateFile = path.join(config.dataDir, "backups", "state.json");
+  const bkState = () => { try { return JSON.parse(fs.readFileSync(bkStateFile, "utf8")); } catch (e) { return {}; } };
+  const bkSave = (st) => { fs.mkdirSync(path.dirname(bkStateFile), { recursive: true }); fs.writeFileSync(bkStateFile, JSON.stringify(st, null, 1)); };
+  /** Who gets the copies: BACKUP_CHAT_IDS (env) or the first owner — the person who started the bot first (Ilya). */
+  const backupTo = () => {
+    const env = String(process.env.BACKUP_CHAT_IDS || "").split(",").map((x) => x.trim()).filter((x) => /^-?\d{3,20}$/.test(x));
+    return env.length ? env : (store.getCatalog().settings.ownerIds || []).slice(0, 1).map(String);
+  };
+  const ruDT = (d) => new Intl.DateTimeFormat("ru-RU", { timeZone: "Asia/Irkutsk", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(d));
+  let bkRunning = false;
+  async function runBackup({ now = new Date(), full = false } = {}) {
+    if (bkRunning) throw httpError(409, "Копия уже делается — подождите минуту");
+    bkRunning = true;
+    const st = bkState();
+    try {
+      store.flush();
+      const photos = BK.uploadsList(config.dataDir);
+      const sig = crypto.createHash("sha1").update(photos.join(",")).digest("hex");
+      const withPhotos = full || sig !== st.photosSig || !st.photosAt || now - new Date(st.photosAt) > 7 * 864e5;
+      const S = store.getCatalog().settings;
+      const { buf, manifest } = BK.createBackup(config.dataDir, { withPhotos, brand: S.brand || "", now });
+      const stamp = LY.todayLocal(now) + "-" + String(LY.hourLocal(now)).padStart(2, "0") + new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Irkutsk", minute: "2-digit" }).format(now).padStart(2, "0");
+      const name = `backup-${stamp}${withPhotos ? "-foto" : ""}.zip`;
+      BK.saveLocal(config.dataDir, name, buf);
+      const nCust = Object.keys(store.getCustomers().list).length, nOrd = store.getOrders().list.length;
+      const caption = `🗄 <b>Копия ${escH(S.brand || "магазина")}</b> от ${ruDT(now)}\nКлиентов: ${nCust} · заказов: ${nOrd} · товаров: ${store.getCatalog().products.length}\n` +
+        (withPhotos ? `Фото: ${manifest.photos} (все)` : `Фото не менялись — они в копии от ${st.photosAt ? ruDT(st.photosAt) : "—"}`) +
+        `\n\nСохраните файл. Как восстановить — внутри архива, файл «КАК-ВОССТАНОВИТЬ.txt».`;
+      const to = backupTo(), sentTo = [];
+      let sendError = "";
+      if (bot && bot.sendDocument) for (const id of to) {
+        try { await bot.sendDocument(id, buf, `${(S.brand || "shop").replace(/[^A-Za-z0-9]+/g, "-").toLowerCase()}-${name}`, caption); sentTo.push(id); }
+        catch (e) { sendError = e.message; log.error("Копия в чат " + id + ": " + e.message); }
+      }
+      const next = Object.assign(st, { day: LY.todayLocal(now), lastAt: now.toISOString(), lastName: name, lastSize: buf.length, lastSent: sentTo.length, lastError: sendError || (to.length ? "" : "Некому отправить: нет владельца") });
+      if (withPhotos && (sentTo.length || !to.length || !bot)) Object.assign(next, { photosSig: sig, photosAt: now.toISOString(), photosName: name });
+      bkSave(next);
+      return { name, size: buf.length, withPhotos, sentTo: sentTo.length, error: next.lastError };
+    } finally { bkRunning = false; }
+  }
+  function backupStatus() {
+    const st = bkState();
+    let files = [];
+    try { files = fs.readdirSync(path.join(config.dataDir, "backups")).filter((f) => /^backup-.*\.zip$/.test(f)).sort().reverse(); } catch (e) { /* none yet */ }
+    return { lastAt: st.lastAt || null, lastName: st.lastName || "", lastSize: st.lastSize || 0, lastSent: st.lastSent || 0, lastError: st.lastError || "", photosAt: st.photosAt || null, onServer: files.length, to: backupTo().length, restored: restored.map((m) => ({ createdAt: m.createdAt, files: m.files, photos: m.restoredPhotos })) };
+  }
+  on("GET", "/api/admin/backup", () => backupStatus(), { owner: true });
+  on("POST", "/api/admin/backup", async () => Object.assign(await runBackup({ full: true }), { status: backupStatus() }), { owner: true });
+  if (restored.length && bot) {
+    const t = setTimeout(() => {
+      const last = restored[restored.length - 1];
+      for (const id of backupTo()) sendUser(id, `✅ <b>Магазин восстановлен из копии</b> от ${ruDT(last.createdAt)}.\nЗагружено: ${last.files.join(", ")}${restored.some((m) => m.restoredPhotos) ? `, фото: ${restored.reduce((a, m) => a + m.restoredPhotos, 0)}` : ""}.`).catch(() => {});
+    }, 4000);
+    if (t.unref) t.unref();
+  }
 
   /* ---------- server ---------- */
   function httpError(status, message) { const e = new Error(message); e.status = status; return e; }
@@ -900,9 +1081,11 @@ function createApp(opts = {}) {
     }
     if (ordersChanged) store.saveOrders();
     if (changed) store.saveCustomers();
+    // the night backup: once a day after 3:00 (Irkutsk)
+    if (!opts.noBackup && hour >= 3 && bkState().day !== today) { try { await runBackup({ now }); } catch (e) { log.error("Ночная копия: " + e.message); } }
   }
 
-  return { server, store, bot, config, isAdmin, claimOwner, onBotStart, greeting, customers, runJobs };
+  return { server, store, bot, config, isAdmin, claimOwner, onBotStart, greeting, customers, runJobs, runBackup, backupStatus, restored };
 }
 
 if (require.main === module) {

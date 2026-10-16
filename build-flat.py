@@ -4,7 +4,7 @@ src = os.path.dirname(os.path.abspath(__file__)); out = sys.argv[1]
 shutil.rmtree(out, ignore_errors=True); os.makedirs(out)
 def rd(p): return open(os.path.join(src, p), encoding='utf-8').read()
 def wr(n, s): open(os.path.join(out, n), 'w', encoding='utf-8').write(s)
-for f in ['store.js', 'stats.js', 'tilda.js', 'telegram.js', 'max.js', 'loyalty.js', 'payments.js']: wr(f, rd('server/' + f))
+for f in ['store.js', 'stats.js', 'tilda.js', 'telegram.js', 'max.js', 'loyalty.js', 'payments.js', 'importer.js', 'backup.js']: wr(f, rd('server/' + f))
 wr('qrcode.js', rd('server/vendor/qrcode.js'))
 wr('orders.js', rd('server/orders.js').replace('require("../public/pricing.js")', 'require("./pricing.js")'))
 idx = rd('server/index.js')
@@ -34,6 +34,11 @@ if os.path.isdir(os.path.join(src, 'public/demo')) and SEED != 'catalog':
 seed['settings']['ownerIds'] = [int(x) for x in os.environ.get('OWNER_IDS', '').split(',') if x]
 if os.path.exists(os.path.join(src, 'certs')):
     for f in os.listdir(os.path.join(src, 'certs')): shutil.copy(os.path.join(src, 'certs', f), out)
+imp = os.path.join(src, 'seed', SEED + '.import.json')
+if SEED != 'catalog' and os.path.exists(imp):
+    shutil.copy(imp, os.path.join(out, 'catalog.import.json'))
+    for f in json.load(open(imp, encoding='utf-8')).get('products', []):
+        for ph in f.get('photos', []): shutil.copy(os.path.join(src, 'seed', 'import', ph), os.path.join(out, ph))
 json.dump(seed, open(os.path.join(out, 'catalog.seed.json'), 'w', encoding='utf-8'), ensure_ascii=False)
 pk = json.loads(rd('package.json')); pk['main'] = 'index.js'; pk['scripts'] = {'start': 'node index.js'}
 wr('package.json', json.dumps(pk, ensure_ascii=False, indent=2))

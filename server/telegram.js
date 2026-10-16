@@ -41,7 +41,8 @@ function createBot({ token, webAppUrl, log = console }) {
   }
   let currentUrl = webAppUrl || "";
   let username = "";
-  const openButton = (text) => ({ inline_keyboard: [[{ text, web_app: { url: currentUrl } }]] });
+  /** The «open» button. payload (e.g. rv_1-s_otzyv) goes to the app as ?start=… — buttons don't carry Telegram's start_param. */
+  const openButton = (text, payload = "") => ({ inline_keyboard: [[{ text, web_app: { url: currentUrl + (payload && /^[A-Za-z0-9_-]{1,64}$/.test(payload) ? (currentUrl.includes("?") ? "&" : "?") + "start=" + payload : "") } }]] });
   const setMenu = () => currentUrl ? call("setChatMenuButton", { menu_button: { type: "web_app", text: "Каталог", web_app: { url: currentUrl } } }) : Promise.resolve();
   /** Changes the mini app address (e.g. detected from the hosting domain) and updates the bot's menu button. */
   function setWebAppUrl(url) {
@@ -60,6 +61,19 @@ function createBot({ token, webAppUrl, log = console }) {
     if (!urls.length) return null;
     if (urls.length === 1) return call("sendPhoto", { chat_id: chatId, photo: urls[0], caption: String(caption || "").slice(0, 1000) });
     return call("sendMediaGroup", { chat_id: chatId, media: urls.map((u, i) => Object.assign({ type: "photo", media: u }, i ? {} : { caption: String(caption || "").slice(0, 1000) })) });
+  }
+
+  /** A file in the chat (night backup). Telegram bots may send files up to 50 MB. */
+  async function sendDocument(chatId, buf, filename, caption = "") {
+    const fd = new FormData();
+    fd.append("chat_id", String(chatId));
+    fd.append("caption", String(caption || "").slice(0, 1000));
+    fd.append("parse_mode", "HTML");
+    fd.append("document", new Blob([buf], { type: "application/zip" }), filename);
+    const res = await fetch(`${base}/sendDocument`, { method: "POST", body: fd });
+    const data = await res.json().catch(() => ({}));
+    if (!data.ok) throw new Error(`Telegram sendDocument: ${data.description || res.status}`);
+    return data.result;
   }
 
   let running = false;
@@ -89,7 +103,8 @@ function createBot({ token, webAppUrl, log = console }) {
             const greet = (typeof res === "object" && res.greeting) || (hooks.greeting && hooks.greeting()) ||
               "Здравствуйте! Это <b>Sweet Roses</b> — мастерская клубники в шоколаде в Иркутске 🍓\n\nНажмите кнопку ниже, чтобы выбрать подарок и оставить заявку. Менеджер перезвонит в течение 10 минут (ежедневно 10:00–20:00).";
             const btn = (typeof res === "object" && res.button) || "Открыть каталог";
-            await sendMessage(chatId, greet + extra, currentUrl ? { reply_markup: openButton(btn) } : {}).catch((e) => log.error(e.message));
+            const appPayload = typeof res === "object" && res.appPayload != null ? res.appPayload : m.text.slice(6).trim().replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64);
+            await sendMessage(chatId, greet + extra, currentUrl ? { reply_markup: openButton(btn, appPayload) } : {}).catch((e) => log.error(e.message));
           } else if (m.text.startsWith("/id")) {
             const admin = hooks.isAdmin && hooks.isAdmin(m.from && m.from.id);
             await sendMessage(chatId, `ID этого чата: <code>${chatId}</code>${admin ? "\n\nВставьте его в «Управление → Настройки → Куда присылать заявки»." : ""}`).catch((e) => log.error(e.message));
@@ -104,7 +119,7 @@ function createBot({ token, webAppUrl, log = console }) {
   }
   function stop() { running = false; }
 
-  return { call, sendMessage, sendPhotos, startPolling, stop, openButton, setWebAppUrl, getWebAppUrl: () => currentUrl, getUsername: () => username };
+  return { call, sendMessage, sendPhotos, sendDocument, startPolling, stop, openButton, setWebAppUrl, getWebAppUrl: () => currentUrl, getUsername: () => username };
 }
 
 module.exports = { validateInitData, signInitData, createBot };

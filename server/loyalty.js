@@ -11,8 +11,9 @@ const TZ = "Asia/Irkutsk";
 function defaultLoyalty() {
   return {
     features: { customers: true, bonuses: true, levels: true, burn: true, dates: true, repeat: true, referral: true, broadcasts: true, payments: true,
-      hint: true, share: true, giftcard: true, sources: true, welcome: true },
+      hint: true, share: true, giftcard: true, sources: true, welcome: true, reviews: true },
     welcomeBonus: 200,
+    reviewBonus: 200,
     giftBonus: 200,
     maxPayPercent: 30,
     burnDays: 90,
@@ -55,7 +56,8 @@ function log(c, entry) {
  * Launch parameter grammar (MAX/Telegram startapp, [A-Za-z0-9_-]): parts joined by "-", each "<key>_<value>".
  *   p_<product>  open a product      h_<product>  a hint "I want this as a gift"
  *   r_<refcode>  who shared the link  s_<source>   ad source / QR code
- *   g_<giftid>   a digital gift card  legacy: ref_<code>, paid_<order>
+ *   g_<giftid>   a digital gift card  rv_1         open the review form (QR on the card in a bouquet)
+ *   legacy: ref_<code>, paid_<order>
  */
 function parseStart(sp) {
   sp = String(sp || "");
@@ -72,6 +74,7 @@ function parseStart(sp) {
     else if (k === "r" && /^[0-9a-f]{8}$/.test(v)) out.ref = v;
     else if (k === "s" && /^[a-z0-9]{1,20}$/.test(v)) out.source = v;
     else if (k === "g" && /^[0-9a-f]{10}$/.test(v)) out.gift = v;
+    else if (k === "rv") out.review = true;
   }
   return out;
 }

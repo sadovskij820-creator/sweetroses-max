@@ -167,8 +167,45 @@ function createBot({ token, request, log = console, buttonText = "Открыть
   }
   function stop() { running = false; }
 
+  /**
+   * A file in the chat (night backup): get an upload URL → POST the file (field «data») → send a message with the token.
+   * Right after the upload MAX may answer attachment.not.ready — then wait and try again.
+   */
+  async function sendDocument(id, buf, filename, caption = "", { upload = multipartUpload, wait = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
+    const slot = await call("POST", "/uploads?type=file");
+    if (!slot || !slot.url) throw new Error("MAX не дал адрес для загрузки файла");
+    const up = await upload(slot.url, buf, filename);
+    const token = (up && up.token) || slot.token;
+    if (!token) throw new Error("MAX не вернул токен загруженного файла");
+    const n = String(id).trim();
+    const q = Number(n) < 0 ? `chat_id=${encodeURIComponent(n)}` : `user_id=${encodeURIComponent(n)}`;
+    let delay = 1500;
+    for (let i = 0; ; i++) {
+      await wait(delay);
+      try { return await call("POST", `/messages?${q}`, { text: String(caption || "").slice(0, 4000), format: "html", attachments: [{ type: "file", payload: { token } }] }); }
+      catch (e) { if (i >= 5 || !/not.ready|not\.processed/i.test(e.message)) throw e; delay *= 2; }
+    }
+  }
+  function multipartUpload(url, buf, filename) {
+    const ca = trustedCA();
+    const boundary = "----digitap" + crypto.randomBytes(8).toString("hex");
+    const head = Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="data"; filename="${filename.replace(/[^\w.-]/g, "_")}"\r\nContent-Type: application/octet-stream\r\n\r\n`);
+    const body = Buffer.concat([head, buf, Buffer.from(`\r\n--${boundary}--\r\n`)]);
+    const u = new URL(url);
+    return new Promise((resolve, reject) => {
+      const req = https.request({ host: u.hostname, port: u.port || 443, path: u.pathname + u.search, method: "POST", ca, timeout: 120e3,
+        headers: { Authorization: token, "Content-Type": `multipart/form-data; boundary=${boundary}`, "Content-Length": body.length } }, (res) => {
+        let t = ""; res.setEncoding("utf8"); res.on("data", (c) => (t += c));
+        res.on("end", () => { if (res.statusCode >= 400) return reject(new Error(`MAX upload: ${res.statusCode} ${t.slice(0, 200)}`)); let j = {}; try { j = JSON.parse(t); } catch (e) { /* the token may come with the slot */ } resolve(j); });
+      });
+      req.on("timeout", () => req.destroy(new Error("timeout")));
+      req.on("error", reject);
+      req.end(body);
+    });
+  }
+
   return {
-    call, me, sendMessage, sendPhotos, startPolling, stop, openButton,
+    call, me, sendMessage, sendPhotos, sendDocument, startPolling, stop, openButton,
     // In MAX the mini app address is set in the partner cabinet (bot settings), not via API.
     setWebAppUrl(url) { currentUrl = url || currentUrl; },
     getWebAppUrl: () => currentUrl,

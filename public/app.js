@@ -16,6 +16,8 @@
   const host = tg || mx;
   const HOST_NAME = mx ? "MAX" : "Telegram";
   const INIT_DATA = (host && host.initData) || (mx && /WebAppData=/.test(LAUNCH_HASH) ? LAUNCH_HASH : "");
+  // the bot's button opens the app as …/?start=rv_1-s_otzyv (Telegram buttons have no start_param) — pass it to the server
+  const START_PARAM = (() => { try { const v = new URLSearchParams(location.search).get("start") || ""; return /^[A-Za-z0-9_-]{1,64}$/.test(v) ? v : ""; } catch (e) { return ""; } })();
   const P = window.SRPricing;
   const $app = document.getElementById("app");
   const TZ = "Asia/Irkutsk";
@@ -95,7 +97,7 @@
     opts = opts || {};
     const res = await fetch(path, {
       method: opts.method || "GET",
-      headers: { "Content-Type": "application/json", "X-Init-Data": INIT_DATA, "X-Platform": mx ? "max" : "telegram" },
+      headers: Object.assign({ "Content-Type": "application/json", "X-Init-Data": INIT_DATA, "X-Platform": mx ? "max" : "telegram" }, START_PARAM ? { "X-Start-Param": START_PARAM } : {}),
       body: opts.body ? JSON.stringify(opts.body) : undefined,
     });
     let data = null;
@@ -254,6 +256,7 @@
         return list.length ? `<h2 class="h2">${esc(sec.title)}</h2><div class="grid">${list.map(productCard).join("")}</div>
       <a class="btn soft block" style="margin-top:16px" href="#/catalog/${esc(sec.cat)}">${esc(sec.more || "Смотреть все")}</a>` : "";
       }).join("")}
+      ${homeReviews()}
     </div>`;
   }
 
@@ -594,11 +597,91 @@
           ${o.transferPayable && o.transferClaimed ? `<span class="muted" style="font-size:13px;align-self:center">💳 Оплата на проверке</span>` : ""}
           ${o.giftLink ? `<button class="btn ghost small" data-action="sendGift" data-link="${esc(o.giftLink)}">🎁 Открытка</button>` : ""}
         </div></div>`).join("") : `<p class="muted">Здесь появятся ваши заказы.</p>`}
+      ${RVS() && orders.length ? `<a class="btn soft block" style="margin-top:12px" href="#/review">⭐ Оценить букет${rvBonus() ? ` · +${rvBonus()} бонусов` : ""}</a>` : ""}
 
       ${feat("broadcasts") ? `<label class="check" style="margin-top:22px"><input type="checkbox" data-action="toggleConsent" ${p.consent ? "checked" : ""}><span>Присылать акции, напоминания о датах и бонусах</span></label>` : ""}
       ${feat("bonuses") && p.history.length ? `<details class="history"><summary>История бонусов</summary>${p.history.map((h) => `<div class="addon"><span class="t">${esc(h.note || h.kind)}<br><small class="muted">${ddmm(h.at)}</small></span><span class="p" style="color:${h.delta > 0 ? "var(--accent)" : "var(--muted)"}">${h.delta > 0 ? "+" : ""}${h.delta}</span></div>`).join("")}</details>` : ""}
       <a class="btn ghost block" style="margin-top:22px" href="#/about">${esc(state.catalog.settings.aboutLabel || "О мастерской")}</a>
     </div>`;
+  }
+
+  /* ---------------- reviews (QR on the card in a bouquet → «Как вам букет?») ---------------- */
+  const RVS = () => state.catalog.reviews;
+  const rvBonus = () => (RVS() && RVS().bonus) || 0;
+  const starLine = (n) => `<span class="stars-ro" aria-label="${n} из 5">${"★".repeat(n)}<i>${"★".repeat(5 - n)}</i></span>`;
+  const rvDate = (iso) => new Intl.DateTimeFormat("ru-RU", { timeZone: TZ, day: "numeric", month: "long" }).format(new Date(iso));
+  const avgText = (n) => String(n).replace(".", ",");
+  function reviewCard(r) {
+    return `<div class="review-card"><div class="rc-h"><b>${esc(r.name)}</b>${starLine(r.rating)}</div>
+      ${r.text ? `<p>${esc(r.text)}</p>` : ""}
+      ${r.photos && r.photos.length ? `<div class="rc-pics">${r.photos.map((u) => `<a href="${esc(u)}" data-ext>${imgTag(u, 240, "Фото от покупателя")}</a>`).join("")}</div>` : ""}
+      ${r.reply ? `<div class="rc-reply"><b>${esc(state.catalog.settings.brand)}:</b> ${esc(r.reply)}</div>` : ""}
+      <small class="muted">${rvDate(r.at)}</small></div>`;
+  }
+  /** Home page block: rating and the latest reviews (only when there are published ones). */
+  function homeReviews() {
+    const R = RVS();
+    if (!R || !R.count) return "";
+    return `<h2 class="h2">Отзывы <span class="rv-avg">★ ${avgText(R.avg)}</span></h2>
+      ${R.latest.map(reviewCard).join("")}
+      <a class="btn soft block" style="margin-top:12px" href="#/reviews">Все отзывы · ${R.count}</a>`;
+  }
+  function viewReviews() {
+    const d = state.reviewsList;
+    if (!d && !state.reviewsLoading) { state.reviewsLoading = true; api("/api/reviews").then((x) => { state.reviewsList = x; state.reviewsLoading = false; render(); }).catch((e) => { state.reviewsLoading = false; toast(e.message); }); }
+    return `<div class="page">
+      <h1 class="display" style="font-size:36px;margin-top:8px">Отзывы</h1>
+      ${d && d.count ? `<p class="lead">★ ${avgText(d.avg)} · ${d.count} ${plural(d.count, "отзыв", "отзыва", "отзывов")}</p>` : ""}
+      ${RVS() ? `<a class="btn block" style="margin:14px 0 18px" href="#/review">Оставить отзыв${rvBonus() ? ` · +${rvBonus()} бонусов` : ""}</a>` : ""}
+      ${!d ? `<p class="muted">Загружаем…</p>` : d.list.length ? d.list.map(reviewCard).join("") : `<p class="muted">Отзывов пока нет — будьте первым!</p>`}
+    </div>`;
+  }
+  function rvForm() { return state.rv || (state.rv = { rating: 0, text: "", photos: [], consent: false, sending: false, done: null, err: "" }); }
+  function viewReviewForm() {
+    if (!RVS()) return `<div class="page empty"><h1 class="display">Спасибо!</h1><p>Будем рады видеть вас снова.</p><a class="btn" href="#/catalog/all">В каталог</a></div>`;
+    const f = rvForm(), s = state.catalog.settings, bonus = rvBonus();
+    if (f.done) {
+      const good = f.done.status !== "private";
+      return `<div class="page" style="text-align:center">
+        <div class="success-mark"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></div>
+        <h1 class="display" style="font-size:32px">${good ? "Спасибо за отзыв!" : "Спасибо, что рассказали честно"}</h1>
+        <p class="lead">${good ? "Нам очень приятно 💐 Отзыв появится в приложении после проверки." : "Мы уже передали отзыв владельцу — с вами свяжутся и всё исправят."}</p>
+        ${f.done.bonus ? `<div class="info-card" style="margin-top:16px;text-align:left"><p>🎁 Начислили <b>${f.done.bonus} ${plural(f.done.bonus, "бонус", "бонуса", "бонусов")}</b> — ими можно оплатить часть следующего заказа.</p></div>` : ""}
+        ${good && f.done.link2gis ? `<div class="info-card" style="margin-top:12px;text-align:left"><p><b>Поделитесь отзывом и в 2ГИС?</b></p>
+          <p class="muted" style="font-size:13px;margin-top:4px">Это очень поможет магазину. Мы скопируем ваш текст — останется вставить его и нажать «Отправить».</p>
+          <button class="btn block" style="margin-top:10px" data-action="rv2gis">Скопировать и открыть 2ГИС</button></div>` : ""}
+        <a class="btn ghost block" style="margin-top:12px" href="#/catalog/all">В каталог</a>
+      </div>`;
+    }
+    if (!host && !window.__MOCK) return `<div class="page empty"><h1 class="display">Оцените букет</h1><p>Откройте магазин через бота в ${HOST_NAME}, чтобы оставить отзыв.</p></div>`;
+    return `<div class="page">
+      <h1 class="display" style="font-size:34px;margin-top:8px">Как вам букет?</h1>
+      <p class="lead">Оцените его, даже если букет вам подарили 💐${bonus ? ` За честный отзыв дарим <b>${bonus} бонусов</b> на ваш заказ в ${esc(s.brand)}.` : ""}</p>
+      <form data-form="review" novalidate>
+      <div class="stars" role="radiogroup" aria-label="Оценка">${[1, 2, 3, 4, 5].map((n) => `<button type="button" class="star ${n <= f.rating ? "on" : ""}" data-action="rvStar" data-n="${n}" role="radio" aria-checked="${n === f.rating}" aria-label="${n} из 5">★</button>`).join("")}</div>
+      <p class="muted" style="text-align:center;font-size:13px;margin:4px 0 0">${["Нажмите на звезду", "Очень плохо", "Плохо", "Нормально", "Хорошо", "Отлично!"][f.rating]}</p>
+      <label class="field"><span>${f.rating && f.rating <= 3 ? "Что не понравилось? Мы обязательно разберёмся" : "Пара слов о букете (по желанию)"}</span>
+        <textarea class="input" name="text" maxlength="1500" data-input="rvText" placeholder="Например: свежие цветы, красиво упаковали, привезли вовремя">${esc(f.text)}</textarea></label>
+      <div class="field"><span>Фото букета (по желанию, до 3)</span>
+        <div class="photo-grid">${f.photos.map((u, i) => `<div class="photo-tile">${imgTag(u, 240, "")}<button type="button" class="pt-del" data-action="rvPhotoDel" data-i="${i}" aria-label="Убрать фото">×</button></div>`).join("")}
+        ${f.photos.length < 3 ? `<label class="photo-add"><input type="file" accept="image/*" data-review-upload hidden><b>+</b><small>Добавить фото</small></label>` : ""}</div></div>
+      ${feat("broadcasts") ? `<label class="check"><input type="checkbox" data-input="rvConsent" ${f.consent ? "checked" : ""}><span>Присылать акции и бонусы в ${HOST_NAME}</span></label>` : ""}
+      ${f.err ? `<p class="err">${esc(f.err)}</p>` : ""}
+      <button class="btn block" type="submit" style="margin-top:18px" ${f.sending ? "disabled" : ""}>${f.sending ? "Отправляем…" : "Отправить отзыв"}</button>
+      </form></div>`;
+  }
+  async function uploadReviewPhoto(file) {
+    const body = await shrinkPhoto(file);
+    if (body.size > 4e6) throw new Error("Фото слишком большое — выберите другое");
+    const res = await fetch("/api/reviews/photo", { method: "POST", headers: { "Content-Type": body.type || "application/octet-stream", "X-Init-Data": INIT_DATA }, body });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || "Не удалось загрузить фото");
+    return data.url;
+  }
+  function openExternal(u) {
+    if (tg) { /^https:\/\/t\.me\//.test(u) ? tg.openTelegramLink(u) : tg.openLink(u); return; }
+    if (mx) { try { mx.openLink(u); return; } catch (e) { /* fall through */ } }
+    window.open(u, "_blank");
   }
 
   function viewAbout() {
@@ -625,9 +708,12 @@
         ${s.email ? `<a class="contact-row" href="mailto:${esc(s.email)}"><span>Почта</span><b>${esc(s.email)}</b></a>` : ""}
         ${s.socials.map((x) => `<a class="contact-row" href="${esc(x.url)}" data-ext><span>${esc(x.title)}</span><b>Открыть</b></a>`).join("")}
       </div>
-      <a class="btn block" style="margin-top:20px" href="${esc(s.map2gis)}" data-ext>Построить маршрут в 2ГИС</a>
+      <a class="btn block" style="margin-top:20px" href="${esc(s.mapRoute || s.map2gis)}" data-ext>Построить маршрут в 2ГИС</a>
+      ${s.mapYandex ? `<a class="btn ghost block" style="margin-top:10px" href="${esc(s.mapYandex)}" data-ext>Маршрут в Яндекс Картах</a>` : ""}
       <a class="btn ghost block" style="margin-top:10px" href="#/about">${esc(s.aboutLabel || "О мастерской")}, доставка и оплата</a>
+      ${RVS() ? `<a class="btn ghost block" style="margin-top:10px" href="#/reviews">Отзывы${RVS().count ? ` · ★ ${avgText(RVS().avg)}` : ""}</a>` : ""}
       ${s.socials.some((x) => /instagram/i.test(x.title)) ? `<p class="muted" style="font-size:11.5px;margin-top:18px">*Instagram принадлежит компании Meta, деятельность которой запрещена в РФ.</p>` : ""}
+      ${s.madeBy && s.madeBy.text ? `<p class="muted made-by" style="font-size:12px;margin-top:22px;text-align:center">${esc(s.madeBy.text)}${s.madeBy.url ? `<br><a href="${esc(s.madeBy.url)}" data-ext style="color:inherit;font-weight:700">${esc(s.madeBy.linkText || s.madeBy.url)}</a>` : ""}</p>` : ""}
     </div>`;
   }
 
@@ -642,6 +728,7 @@
       else if (tab === "promo") data = await api("/api/admin/sources");
       else if (tab.startsWith("customer/")) data = await api(`/api/admin/customers/${encodeURIComponent(tab.slice(9))}`);
       else if (tab === "staff") data = await api("/api/admin/staff");
+      else if (tab === "reviews") data = await api("/api/admin/reviews");
       else if (tab === "broadcast") {
         const [h, ...counts] = await Promise.all([api("/api/admin/broadcasts"), ...["all", "regular", "new", "sleeping"].map((sg) => api("/api/admin/broadcast/preview?segment=" + sg))]);
         data = { list: h.list, counts: { all: counts[0].count, regular: counts[1].count, new: counts[2].count, sleeping: counts[3].count } };
@@ -655,7 +742,7 @@
   }
   function adminTabs(active) {
     const owner = !!state.me.isOwner;
-    const tabs = [["orders", "Заявки"], owner && ["pay", "💳 Оплата"], owner && ["staff", "👤 Сотрудники"], ["customers", "Клиенты"], ["products", "Товары"], ["categories", "Категории"], ["extras", "Допы и промо"], ["broadcast", "Рассылки"], ["promo", "Ссылки и QR"], owner && ["loyalty", "Бонусы"], owner && ["settings", "Настройки"], ["stats", "Статистика"]].filter(Boolean);
+    const tabs = [["orders", "Заявки"], owner && ["pay", "💳 Оплата"], owner && ["staff", "👤 Сотрудники"], ["customers", "Клиенты"], ["reviews", "⭐ Отзывы"], ["products", "Товары"], ["categories", "Категории"], ["extras", "Допы и промо"], ["broadcast", "Рассылки"], ["promo", "Ссылки и QR"], owner && ["loyalty", "Бонусы"], owner && ["settings", "Настройки"], ["stats", "Статистика"]].filter(Boolean);
     return `<div class="admin-tabs">${tabs.map(([k, t]) => `<button class="chip" aria-pressed="${k === active}" data-action="adminTab" data-tab="${k}">${t}</button>`).join("")}</div>`;
   }
   function viewAdmin(tab, arg) {
@@ -666,7 +753,7 @@
     const d = fresh ? state.admin.data : null;
     let body = `<p class="muted">Загружаем…</p>`;
     if (d && d.error) body = `<p class="err">${esc(d.error)}</p>`;
-    else if (d) body = ({ pay: adminTransfer, staff: adminStaff, orders: adminOrders, products: adminProducts, categories: adminCategories, extras: adminExtras, settings: adminSettings, stats: adminStats, edit: adminEdit, customers: adminCustomers, customer: adminCustomer, broadcast: adminBroadcast, loyalty: adminLoyalty, promo: adminPromo }[tab] || adminOrders)(d, arg);
+    else if (d) body = ({ pay: adminTransfer, staff: adminStaff, orders: adminOrders, products: adminProducts, categories: adminCategories, extras: adminExtras, settings: adminSettings, stats: adminStats, edit: adminEdit, customers: adminCustomers, customer: adminCustomer, broadcast: adminBroadcast, loyalty: adminLoyalty, promo: adminPromo, reviews: adminReviews }[tab] || adminOrders)(d, arg);
     return `<div class="page"><h1 class="display" style="font-size:34px;margin-top:8px">Управление</h1>${tab === "edit" || tab === "customer" ? "" : adminTabs(tab)}${body}</div>`;
   }
   function payBadge(o) {
@@ -817,7 +904,22 @@
       <label class="field"><span>Текст после отправки заявки</span><textarea class="input" name="successText">${esc(s.successText)}</textarea></label>
       <button class="btn block" type="submit" style="margin-top:16px">Сохранить настройки</button>
       <button class="btn ghost block" type="button" style="margin-top:10px" data-action="testNotify">Отправить тестовую заявку себе</button>
-      </form>`;
+      </form>${backupBlock()}`;
+  }
+  /** «Резервные копии»: every night the app sends a copy of all data to the owner's bot chat and keeps 14 on the server. */
+  function backupBlock() {
+    const b = state.admin.backup;
+    if (!b && !state.admin.backupLoading) { state.admin.backupLoading = true; api("/api/admin/backup").then((x) => { state.admin.backup = x; state.admin.backupLoading = false; render(); }).catch(() => { state.admin.backupLoading = false; }); }
+    const dt = (iso) => new Intl.DateTimeFormat("ru-RU", { timeZone: TZ, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(iso));
+    return `<h2 class="h2" style="font-size:22px">Резервные копии</h2>
+      <div class="info-card"><p>Каждую ночь после 3:00 приложение сохраняет копию всех данных — клиенты, заказы, бонусы, отзывы, каталог, настройки и фото. Копия приходит в чат с ботом${b && b.to ? "" : " владельцу"}, ещё 14 последних хранятся на сервере.</p>
+        ${!b ? `<p class="muted" style="font-size:13px;margin-top:8px">Загружаем…</p>` : `<p style="font-size:13.5px;margin-top:10px">${b.lastAt ? `Последняя копия: <b>${dt(b.lastAt)}</b>${b.lastSent ? " · отправлена в чат ✅" : ""}` : "Копий ещё не было — первая будет сегодня ночью."}<br><span class="muted">На сервере: ${b.onServer} · фото в копии от ${b.photosAt ? dt(b.photosAt) : "—"}</span></p>
+        ${b.lastError ? `<p class="err" style="font-size:12.5px">Не получилось отправить: ${esc(b.lastError)}</p>` : ""}
+        ${b.restored && b.restored.length ? `<p style="font-size:13px;margin-top:6px">✅ При последнем запуске магазин восстановлен из копии от ${dt(b.restored[b.restored.length - 1].createdAt)}.</p>` : ""}`}
+        <button class="btn soft block" style="margin-top:12px" data-action="backupNow" ${state.admin.backupBusy ? "disabled" : ""}>${state.admin.backupBusy ? "Делаем копию…" : "Сделать копию сейчас"}</button>
+        <details style="margin-top:10px"><summary class="muted" style="font-size:13px">Как восстановить из копии</summary>
+          <p class="muted" style="font-size:12.5px;margin-top:6px">Amvera → проект → «Репозиторий» → «Data» → «Загрузить данные»: загрузите ZIP из чата, переименовав его в restore.zip. Если в копии нет фото — ещё последнюю копию с фото как restore-foto.zip. Затем перезапустите приложение. Ссылки, QR-коды и бот остаются прежними.</p></details>
+      </div>`;
   }
   function adminStats(d) {
     const max = Math.max(1, ...d.days.map((x) => x.visitors));
@@ -898,6 +1000,44 @@
       <h2 class="h2" style="font-size:22px">Пришли от других покупателей</h2>
       ${d.auto.map((x) => `<div class="addon"><span class="t">${esc(x.title)}</span><span class="p">${x.customers} чел.</span></div>`).join("")}`;
   }
+  const RV_STATUS = { pending: "Ждёт проверки", approved: "Опубликован", hidden: "Скрыт", private: "Не публикуется" };
+  function adminReviews(d) {
+    const owner = !!state.me.isOwner;
+    const dt = (iso) => new Intl.DateTimeFormat("ru-RU", { timeZone: TZ, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(iso));
+    const f = state.admin.rvFilter || "pending";
+    const groups = { pending: "Новые", bad: "Недовольные", approved: "Опубликованные", all: "Все" };
+    const list = d.list.filter((r) => f === "all" || (f === "bad" ? r.status === "private" : r.status === f));
+    const cnt = (k) => d.list.filter((r) => (k === "all" ? true : k === "bad" ? r.status === "private" : r.status === k)).length;
+    return `<p class="muted" style="font-size:13.5px;margin-top:0">Вкладыш с QR-кодом кладёте в каждый букет. Покупатель или тот, кому подарили, сканирует QR, оценивает букет и попадает в вашу базу${d.bonus ? `, а за отзыв получает ${d.bonus} бонусов` : ""}. 4–5 звёзд появляются в приложении после вашей проверки, и человеку предлагаем повторить отзыв в 2ГИС. 1–3 звезды не публикуются — сразу приходят вам в чат.</p>
+      ${!d.enabled ? `<p class="err" style="font-size:13px">Отзывы выключены во вкладке «Бонусы».</p>` : ""}
+      <div class="src-card">
+        <div class="src-h"><b>QR для вкладыша в букет</b></div>
+        <div class="src-stats"><span><b>${d.fromCard.customers}</b> пришло по QR</span><span><b>${d.fromCard.orders}</b> заказов</span><span><b>${rub(d.fromCard.revenue)}</b></span></div>
+        ${d.link ? `<div class="src-body"><img class="qr" alt="QR-код" data-qr-text="${esc(d.link)}" src="">
+          <div><div class="src-link">${esc(d.link)}</div>
+          <button class="btn ghost small" style="margin-top:8px" data-action="copyText" data-text="${esc(d.link)}">Скопировать ссылку</button>
+          <a class="btn ghost small" style="margin-top:6px" data-qr-text-dl="1" download="qr-otzyv.svg">Скачать QR</a></div></div>` : `<p class="muted">QR появится, когда приложение подключат к боту.</p>`}
+      </div>
+      ${owner ? `<details class="history" style="margin-top:10px"><summary>Ссылка на отзывы в 2ГИС${d.link2gis ? "" : " — не указана"}</summary>
+        <form data-form="review2gis" style="margin-top:8px"><input class="input" name="review2gis" value="${esc(d.custom2gis)}" placeholder="${esc(d.link2gis || "https://2gis.ru/…/firm/…/tab/reviews")}">
+        <p class="muted" style="font-size:12px;margin:6px 2px 0">${!d.custom2gis && d.link2gis ? "Сейчас берём из адреса в 2ГИС автоматически. " : ""}Размер бонуса за отзыв — во вкладке «Бонусы».</p>
+        <button class="btn soft block" type="submit" style="margin-top:8px">Сохранить ссылку</button></form></details>` : ""}
+      <div class="admin-tabs" style="margin-top:16px">${Object.entries(groups).map(([k, t]) => `<button class="chip" aria-pressed="${f === k}" data-action="rvFilter" data-f="${k}">${t} · ${cnt(k)}</button>`).join("")}</div>
+      ${list.map((r) => `<div class="order">
+        <div class="h"><span>${starLine(r.rating)} ${esc(r.name)}</span><span class="status">${RV_STATUS[r.status] || r.status}</span></div>
+        <div class="muted" style="font-size:12.5px">${dt(r.at)}${r.username ? " · @" + esc(r.username) : ""}${r.phone ? " · " + esc(r.phone) : ""}${r.orderId ? " · заказ №" + r.orderId : ""}${r.bonus ? ` · +${r.bonus} бонусов` : ""}</div>
+        ${r.text ? `<p style="margin:8px 0">${esc(r.text)}</p>` : `<p class="muted" style="margin:8px 0">(без текста)</p>`}
+        ${r.photos && r.photos.length ? `<div class="order-pics">${r.photos.map((u) => `<a href="${esc(u)}" data-ext>${imgTag(u, 240, "")}</a>`).join("")}</div>` : ""}
+        ${r.reply && state.admin.replyId !== r.id ? `<div class="rc-reply"><b>Ваш ответ:</b> ${esc(r.reply)}</div>` : ""}
+        ${state.admin.replyId === r.id ? `<form data-form="rvReply" data-id="${esc(r.id)}" style="margin-top:8px"><textarea class="input" name="reply" maxlength="1000" placeholder="Спасибо, что выбрали нас!">${esc(r.reply || "")}</textarea>
+          <button class="btn small" type="submit" style="margin-top:6px">Сохранить ответ</button></form>` : ""}
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
+          ${r.status !== "approved" ? `<button class="btn small" data-action="rvSet" data-id="${esc(r.id)}" data-s="approved">Опубликовать</button>` : `<button class="btn ghost small" data-action="rvSet" data-id="${esc(r.id)}" data-s="hidden">Скрыть</button>`}
+          ${r.phone ? `<a class="btn soft small" href="tel:${esc(r.phone)}">Позвонить</a>` : ""}
+          <button class="btn ghost small" data-action="rvReply" data-id="${esc(r.id)}">${r.reply ? "Изменить ответ" : "Ответить"}</button>
+          <button class="btn ghost small" data-action="rvDel" data-id="${esc(r.id)}">Удалить</button>
+        </div></div>`).join("") || `<p class="muted">${f === "pending" ? "Новых отзывов нет." : f === "bad" ? "Недовольных нет 🎉" : "Пока пусто."}</p>`}`;
+  }
   /** QR images need the admin's signature header, so they are fetched and inlined. */
   async function fillQr() {
     for (const img of $app.querySelectorAll("img[data-qr]:not([src^=blob])")) {
@@ -908,8 +1048,16 @@
         const a = $app.querySelector(`[data-qr-dl="${img.dataset.qr}"]`); if (a) a.href = url;
       } catch (e) { /* ignore */ }
     }
+    for (const img of $app.querySelectorAll("img[data-qr-text]:not([src^=blob])")) {
+      try {
+        const r = await fetch(`/api/admin/qr?text=${encodeURIComponent(img.dataset.qrText)}`, { headers: { "X-Init-Data": INIT_DATA } });
+        const url = URL.createObjectURL(await r.blob());
+        img.src = url;
+        const a = $app.querySelector("[data-qr-text-dl]"); if (a) a.href = url;
+      } catch (e) { /* ignore */ }
+    }
   }
-  const FEATURE_NAMES = { customers: "Клиентская база", bonuses: "Бонусы", levels: "Уровни (Бронза, Серебро, Золото)", burn: "Сгорание бонусов", dates: "Важные даты и напоминания", repeat: "Повтор заказа", referral: "Приведи друга", broadcasts: "Рассылки", payments: "Оплата в приложении", welcome: "Приветственный подарок новым", hint: "Кнопка «Намекнуть»", share: "Кнопка «Поделиться»", giftcard: "Цифровая открытка получателю", sources: "Ссылки и QR-коды для рекламы" };
+  const FEATURE_NAMES = { customers: "Клиентская база", bonuses: "Бонусы", levels: "Уровни (Бронза, Серебро, Золото)", burn: "Сгорание бонусов", dates: "Важные даты и напоминания", repeat: "Повтор заказа", referral: "Приведи друга", broadcasts: "Рассылки", payments: "Оплата в приложении", welcome: "Приветственный подарок новым", hint: "Кнопка «Намекнуть»", share: "Кнопка «Поделиться»", giftcard: "Цифровая открытка получателю", sources: "Ссылки и QR-коды для рекламы", reviews: "Отзывы (вкладыш с QR в букет)" };
   function adminLoyalty(d) {
     const L = d.loyaltyResolved, P = d.paymentsResolved;
     return `<form data-form="loyalty">
@@ -929,6 +1077,7 @@
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
         <label class="field"><span>Приветственный, бонусов</span><input class="input" name="welcomeBonus" type="number" min="0" value="${L.welcomeBonus}"></label>
         <label class="field"><span>Получателю открытки, бонусов</span><input class="input" name="giftBonus" type="number" min="0" value="${L.giftBonus}"></label>
+        <label class="field"><span>За отзыв, бонусов</span><input class="input" name="reviewBonus" type="number" min="0" value="${L.reviewBonus}"></label>
       </div>
       <h2 class="h2" style="font-size:22px">Приведи друга</h2>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
@@ -1005,6 +1154,8 @@
     else if (a === "profile") { html = viewProfile(); tab = "profile"; }
     else if (a === "about") { html = viewAbout(); tab = "profile"; root = false; }
     else if (a === "contacts") { html = viewContacts(); tab = "contacts"; }
+    else if (a === "reviews") { html = viewReviews(); tab = "contacts"; root = false; }
+    else if (a === "review") { html = viewReviewForm(); tab = "home"; }
     else if (a === "admin") { html = viewAdmin(b === "edit" ? "edit" : b || "orders", c); tab = ""; root = b !== "edit" && b !== "customer"; }
     else html = viewHome();
     $app.innerHTML = html;
@@ -1020,7 +1171,7 @@
     if (host && host.BackButton) { try { root ? host.BackButton.hide() : host.BackButton.show(); } catch (e) {} }
     const af = $app.querySelector("[autofocus]"); if (af) af.focus();
     bindGallery();
-    if ($app.querySelector("img[data-qr]")) fillQr();
+    if ($app.querySelector("img[data-qr], img[data-qr-text]")) fillQr();
   }
   function bindGallery() {
     const g = $app.querySelector("[data-gallery]");
@@ -1196,6 +1347,23 @@
       if (window.confirm("Удалить ссылку? Статистика по ней пропадёт из списка.")) await adminCall("/api/admin/sources", "PUT", { sources: list }, "promo");
       return;
     }
+    if (act === "rvStar") { const f = rvForm(); f.rating = +ds.n; f.err = ""; haptic(); render(); return; }
+    if (act === "rvPhotoDel") { rvForm().photos.splice(+ds.i, 1); render(); return; }
+    if (act === "rv2gis") {
+      const f = rvForm(), link = f.done && f.done.link2gis;
+      if (!link) return;
+      if (f.text) { try { await navigator.clipboard.writeText(f.text); toast("Текст скопирован — вставьте его в 2ГИС"); } catch (e) { /* the person will type it */ } }
+      openExternal(link); return;
+    }
+    if (act === "rvFilter") { state.admin.rvFilter = ds.f; render(); return; }
+    if (act === "rvSet") { if (await adminCall(`/api/admin/reviews/${ds.id}`, "PATCH", { status: ds.s }, "reviews")) toast(ds.s === "approved" ? "Отзыв опубликован" : "Отзыв скрыт"); state.reviewsList = null; return; }
+    if (act === "rvReply") { state.admin.replyId = state.admin.replyId === ds.id ? null : ds.id; render(); return; }
+    if (act === "rvDel") {
+      const go = () => adminCall(`/api/admin/reviews/${ds.id}`, "DELETE", null, "reviews").then((r) => { if (r) { toast("Отзыв удалён"); state.reviewsList = null; } });
+      const q = "Удалить отзыв насовсем?";
+      if (tg && tg.showConfirm) tg.showConfirm(q, (yes) => yes && go()); else if (window.confirm(q)) go();
+      return;
+    }
     if (act === "copyText") { try { await navigator.clipboard.writeText(ds.text); toast("Скопировано"); } catch (e) { toast(ds.text); } return; }
     if (act === "custSeg") { state.admin.segment = ds.seg; await loadAdmin("customers"); return; }
     if (act === "bSeg") { state.admin.bseg = ds.seg; render(); return; }
@@ -1222,6 +1390,12 @@
       catch (e) { toast(e.message); el.disabled = false; el.textContent = "Обновить с сайта"; }
       return;
     }
+    if (act === "backupNow") {
+      state.admin.backupBusy = true; render();
+      try { const r = await api("/api/admin/backup", { method: "POST" }); state.admin.backup = r.status; toast(r.sentTo ? "Копия готова — отправили вам в чат" : r.error ? "Копия сохранена на сервере, но не отправлена: " + r.error : "Копия сохранена на сервере"); }
+      catch (e) { toast(e.message); }
+      state.admin.backupBusy = false; render(); return;
+    }
     if (act === "testNotify") { try { await api("/api/admin/test-notify", { method: "POST" }); toast("Тестовая заявка отправлена"); } catch (e) { toast(e.message); } return; }
   });
 
@@ -1238,6 +1412,8 @@
     if (k === "cardText") { state.cart.cardText = v; saveCart(); return; }
     if (k === "custSearch") { state.admin.cq = v; clearTimeout(window.__cs); window.__cs = setTimeout(async () => { await loadAdmin("customers"); const s = $app.querySelector('[data-input="custSearch"]'); if (s) { s.focus(); s.setSelectionRange(v.length, v.length); } }, 350); return; }
     if (k === "promo") { state.promo.code = v; return; }
+    if (k === "rvText") { rvForm().text = v; return; }
+    if (k === "rvConsent") { rvForm().consent = v; return; }
     if (k.startsWith("co.")) {
       const f = k.slice(3);
       initCheckout()[f] = v;
@@ -1249,6 +1425,13 @@
 
   document.addEventListener("change", async (ev) => {
     const t = ev.target;
+    if (t.dataset.reviewUpload !== undefined) {
+      const file = t.files && t.files[0]; t.value = "";
+      if (!file) return;
+      toast("Загружаем фото…");
+      try { const url = await uploadReviewPhoto(file); const f = rvForm(); if (f.photos.length < 3) f.photos.push(url); render(); } catch (e) { toast(e.message); }
+      return;
+    }
     if (t.dataset.upload !== undefined || t.dataset.uploadTo) {
       const files = [...(t.files || [])].slice(0, 10);
       t.value = "";
@@ -1303,6 +1486,17 @@
       try { state.profile = await api("/api/profile/dates", { method: "POST", body: { title: fd.get("title"), md } }); toast("Напомним заранее 🎂"); render(); } catch (e) { toast(e.message); }
       return;
     }
+    if (f.dataset.form === "review") {
+      const r = rvForm();
+      if (!r.rating) { r.err = "Поставьте оценку — нажмите на звезду"; render(); return; }
+      if (r.rating <= 3 && r.text.trim().length < 3) { r.err = "Расскажите, пожалуйста, что не понравилось — мы обязательно разберёмся"; render(); return; }
+      r.sending = true; r.err = ""; render();
+      try { r.done = await api("/api/reviews", { method: "POST", body: { rating: r.rating, text: r.text, photos: r.photos, consent: r.consent } }); haptic("ok"); loadProfile(); }
+      catch (e) { r.err = e.message; }
+      r.sending = false; render(); window.scrollTo(0, 0); return;
+    }
+    if (f.dataset.form === "review2gis") { if (await adminCall("/api/admin/settings", "PUT", { review2gis: fd.get("review2gis").trim() }, "reviews")) toast("Ссылка сохранена"); return; }
+    if (f.dataset.form === "rvReply") { state.admin.replyId = null; if (await adminCall(`/api/admin/reviews/${f.dataset.id}`, "PATCH", { reply: fd.get("reply") }, "reviews")) toast("Ответ сохранён — его увидят под отзывом"); state.reviewsList = null; return; }
     if (f.dataset.form === "custNote") { if (await adminCall(`/api/admin/customers/${f.dataset.id}`, "PATCH", { note: fd.get("note") }, "customer/" + f.dataset.id)) toast("Заметка сохранена"); return; }
     if (f.dataset.form === "custBonus") {
       const delta = parseInt(fd.get("delta"), 10) || 0;
@@ -1322,7 +1516,7 @@
       const levels = []; for (let i = 0; fd.has("lv_name_" + i); i++) levels.push({ name: fd.get("lv_name_" + i), from: +fd.get("lv_from_" + i) || 0, percent: +fd.get("lv_pct_" + i) || 0 });
       const body = {
         loyalty: { features, maxPayPercent: +fd.get("maxPayPercent"), burnDays: +fd.get("burnDays"), burnRemindDays: +fd.get("burnRemindDays"), datesRemindDays: +fd.get("datesRemindDays"), levels,
-          referral: { friendBonus: +fd.get("friendBonus"), referrerBonus: +fd.get("referrerBonus") }, welcomeBonus: +fd.get("welcomeBonus"), giftBonus: +fd.get("giftBonus") },
+          referral: { friendBonus: +fd.get("friendBonus"), referrerBonus: +fd.get("referrerBonus") }, welcomeBonus: +fd.get("welcomeBonus"), giftBonus: +fd.get("giftBonus"), reviewBonus: +fd.get("reviewBonus") },
         payments: { enabled: fd.get("payEnabled") === "on", provider: fd.get("provider") },
       };
       if (await adminCall("/api/admin/settings", "PUT", body, "loyalty")) { toast("Сохранено"); loadProfile(); }
@@ -1444,6 +1638,7 @@
         if (fresh && state.start.paid) location.hash = `#/done/${state.start.paid}?paid=1`;
         else if (fresh && state.start.gift) location.hash = "#/gift/" + state.start.gift;
         else if (fresh && state.start.productId) location.hash = "#/p/" + state.start.productId;
+        else if (fresh && state.start.review) location.hash = "#/review";
         render(); loadProfile();
       }).catch(() => {});
     } catch (e) {

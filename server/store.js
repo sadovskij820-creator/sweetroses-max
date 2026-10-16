@@ -26,6 +26,7 @@ function createStore(dataDir, seedFile) {
   let stats = read("stats", { days: {}, products: {} });
   let customers = read("customers", { list: {} });
   let broadcasts = read("broadcasts", { list: [] });
+  let reviews = read("reviews", { list: [] });
   let statsDirty = false;
   const timer = setInterval(() => { if (statsDirty) { statsDirty = false; write("stats", stats); } }, 5000);
   timer.unref();
@@ -40,6 +41,8 @@ function createStore(dataDir, seedFile) {
     saveCustomers() { write("customers", customers); },
     getBroadcasts: () => broadcasts,
     saveBroadcasts() { write("broadcasts", broadcasts); },
+    getReviews: () => reviews,
+    saveReviews() { write("reviews", reviews); },
     getStats: () => stats,
     touchStats() { statsDirty = true; },
     flush() { if (statsDirty) { statsDirty = false; write("stats", stats); } },
