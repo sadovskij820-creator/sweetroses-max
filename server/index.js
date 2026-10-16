@@ -986,12 +986,34 @@ function createApp(opts = {}) {
     if (req.method === "HEAD") return res.end();
     fs.createReadStream(file).pipe(res);
   }
+  /* index.html is written for Sweet Roses; the app re-paints it after loading the catalog. To avoid a flash of the
+     wrong shop, the server puts this shop's title, theme, logo, phone and catalog icon into the page right away. */
+  const LOGO_MARKS = {
+    gf: `<svg class="logo-mark" viewBox="0 0 84 66" fill="none" stroke="currentColor" stroke-width="3.6" aria-hidden="true"><path d="M40 8A28 28 0 0 0 28 61.4"/><path d="M38.5 8H76M50 8V66M27 33H73M27 43H73M39 43V66"/></svg>`,
+  };
+  const FLOWER_ICON = '<path d="M7 4.5l2.5 2L12 3.5l2.5 3 2.5-2V9a5 5 0 0 1-10 0z"/><path d="M12 14v7M12 18.5c-1.8-2-4-2.2-5-1.6 1.4 1.5 3.4 2.1 5 1.6M12 17c1.4-1.6 3.4-1.8 4.4-1.3-1.2 1.3-2.9 1.8-4.4 1.3"/>';
+  function brandedIndex(html) {
+    const S = store.getCatalog().settings || {};
+    const e = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    if (S.brand) html = html.replace(/<title>[^<]*<\/title>/, `<title>${e(S.brand)}</title>`);
+    if (S.theme && /^[a-z0-9-]{1,30}$/.test(S.theme)) html = html.replace('<html lang="ru">', `<html lang="ru" data-brand="${S.theme}">`);
+    const mark = LOGO_MARKS[S.logoMark] || (Array.isArray(S.monogram) && S.monogram.length === 2 ? `${e(S.monogram[0])}<i></i>${e(S.monogram[1])}` : "");
+    if (mark) html = html.replace(/<a class="monogram" href="#\/" aria-label="[^"]*">[\s\S]*?<\/a>/, `<a class="monogram" href="#/" aria-label="${e((S.brand || "") + " — на главную")}">${mark}</a>`);
+    const tel = String(S.phone || "").replace(/[^\d+]/g, "");
+    if (tel) html = html.replace(/id="topLeft" href="tel:[^"]*"/, `id="topLeft" href="tel:${tel}"`);
+    if (S.catalogIcon === "flower") html = html.replace(/(<button class="tab" data-tab="catalog"[^>]*>\s*<svg viewBox="0 0 24 24">)[\s\S]*?(<\/svg>)/, `$1${FLOWER_ICON}$2`);
+    return html;
+  }
   function serveStatic(req, res, pathname) {
     let rel = decodeURIComponent(pathname);
     if (rel === "/" || rel === "") rel = "/index.html";
     const file = path.normalize(path.join(config.publicDir, rel));
     if (!file.startsWith(config.publicDir) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) { res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" }); return res.end("Не найдено"); }
     const ext = path.extname(file);
+    if (path.basename(file) === "index.html") { // the shop's name, logo and colours from the first frame — no Sweet Roses flash
+      res.writeHead(200, { "Content-Type": MIME[".html"], "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff" });
+      return res.end(brandedIndex(fs.readFileSync(file, "utf8")));
+    }
     const long = ext === ".woff2";
     res.writeHead(200, { "Content-Type": MIME[ext] || "application/octet-stream", "Cache-Control": long ? "public, max-age=31536000, immutable" : "no-cache", "X-Content-Type-Options": "nosniff" });
     fs.createReadStream(file).pipe(res);
