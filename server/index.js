@@ -29,14 +29,22 @@ function loadDotEnv(file) {
 const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".json": "application/json", ".woff2": "font/woff2", ".png": "image/png", ".jpg": "image/jpeg", ".svg": "image/svg+xml", ".ico": "image/x-icon", ".txt": "text/plain; charset=utf-8" };
 
 function createApp(opts = {}) {
-  // MESSENGER=max (or MAX_BOT_TOKEN set) runs the app inside MAX; otherwise Telegram.
-  const messenger = opts.messenger ?? process.env.MESSENGER ?? (process.env.MAX_BOT_TOKEN ? "max" : "telegram");
-  if (!messengers[messenger]) throw new Error("MESSENGER должен быть telegram или max");
+  /* MESSENGER=telegram | max | telegram,max (16.10.2026: one shop in BOTH messengers — one catalog, one base, one set of orders).
+     The first one is the main one: old data (customers, owners, ADMIN_IDS) without a messenger mark belongs to it.
+     Tokens: BOT_TOKEN — Telegram, MAX_BOT_TOKEN — MAX. */
+  const list = (opts.messengers || String(opts.messenger ?? process.env.MESSENGER ?? (process.env.MAX_BOT_TOKEN ? "max" : "telegram")).split(/[,+\s]+/))
+    .map((x) => String(x).trim().toLowerCase()).filter(Boolean);
+  const platforms = [...new Set(list)];
+  if (!platforms.length || platforms.some((x) => !messengers[x])) throw new Error("MESSENGER должен быть telegram, max или telegram,max");
+  const messenger = platforms[0];
   const M = messengers[messenger];
+  const tokenOf = (pf) => (opts.botTokens && opts.botTokens[pf] != null ? opts.botTokens[pf] : pf === messenger && opts.botToken != null ? opts.botToken : (pf === "max" ? process.env.MAX_BOT_TOKEN : process.env.BOT_TOKEN)) || "";
   const config = {
-    messenger,
-    botToken: opts.botToken ?? (messenger === "max" ? process.env.MAX_BOT_TOKEN : process.env.BOT_TOKEN) ?? "",
-    adminIds: (opts.adminIds ?? process.env.ADMIN_IDS ?? "").split(",").map((s) => s.trim()).filter(Boolean).map(Number),
+    messenger, platforms,
+    botToken: tokenOf(messenger),
+    botTokens: Object.fromEntries(platforms.map((pf) => [pf, tokenOf(pf)])),
+    // «123» — the main messenger, «max:123» / «telegram:123» — a person in the other one
+    adminIds: (opts.adminIds ?? process.env.ADMIN_IDS ?? "").split(",").map((s) => s.trim()).filter(Boolean),
     managerChatId: opts.managerChatId ?? process.env.MANAGER_CHAT_ID ?? "",
     // Amvera (and similar hosts) mount persistent storage at /data
     dataDir: opts.dataDir ?? process.env.DATA_DIR ?? (fs.existsSync("/data") ? "/data" : path.join(__dirname, "..", "data")),
@@ -50,7 +58,16 @@ function createApp(opts = {}) {
   const store = createStore(config.dataDir, config.seedFile);
   // <name>.import.json next to the seed adds the real catalog once to a shop that is already running (see importer.js)
   importCatalog(store, config.dataDir, opts.importFile !== undefined ? opts.importFile : opts.seedFile ? null : config.seedFile.replace(/\.seed\.json$/, ".import.json"), opts.log || console);
-  const bot = opts.bot !== undefined ? opts.bot : config.botToken ? M.createBot({ token: config.botToken, webAppUrl: process.env.WEBAPP_URL || store.getCatalog().settings.webAppUrl || "" }) : null;
+  const bots = {};
+  for (const pf of platforms) {
+    if (opts.bots && pf in opts.bots) bots[pf] = opts.bots[pf];
+    else if (pf === messenger && opts.bot !== undefined) bots[pf] = opts.bot;
+    else bots[pf] = config.botTokens[pf] ? messengers[pf].createBot({ token: config.botTokens[pf], webAppUrl: process.env.WEBAPP_URL || store.getCatalog().settings.webAppUrl || "" }) : null;
+  }
+  const bot = bots[messenger]; // the main bot
+  const botFor = (pf) => bots[pf || messenger] || null;
+  const anyBot = () => platforms.some((pf) => bots[pf]);
+  const PF_NAMES = platforms.map((pf) => PLATFORM_NAME[pf]).join(" или ");
   const log = opts.log || console;
   const orderTimes = new Map(); // rate limit per user/ip
 
@@ -93,7 +110,11 @@ function createApp(opts = {}) {
   }
   const custDb = () => store.getCustomers();
   const customers = {
-    touch(user, startParam = "", now = new Date()) { const c = LY.touchCustomer(custDb(), user, { now, settings: loyal(), startParam, giftExists: (g) => !!findGift(g) }); store.saveCustomers(); return c; },
+    touch(user, startParam = "", now = new Date()) {
+      const c = LY.touchCustomer(custDb(), user, { now, settings: loyal(), startParam, giftExists: (g) => !!findGift(g) });
+      if (user && user.platform && user.platform !== messenger) c.platform = user.platform; else if (user && user.platform && c.platform) delete c.platform;
+      store.saveCustomers(); return c;
+    },
     get: (id) => custDb().list[String(id)] || null,
     addBonus(c, amount, kind, o = {}) { const lot = LY.addBonus(c, amount, kind, Object.assign({ days: loyal().burnDays }, o)); store.saveCustomers(); return lot; },
   };
@@ -103,57 +124,75 @@ function createApp(opts = {}) {
    * the bot then answers with an «Открыть» button that launches the app with the same parameters.
    * (?startapp= would open the app directly, but the chat would not appear.)
    */
-  function botLink(param) {
-    const u = bot && bot.getUsername && bot.getUsername();
+  const username = (pf) => { const b = botFor(pf); return (b && b.getUsername && b.getUsername()) || ""; };
+  function botLink(param, pf = messenger) {
+    const u = username(pf);
     if (!u) return "";
-    return messenger === "max" ? `https://max.ru/${u}?start=${param}` : `https://t.me/${u}?startapp=${param}`;
+    return pf === "max" ? `https://max.ru/${u}?start=${param}` : `https://t.me/${u}?startapp=${param}`;
   }
+  /** The same link for every connected messenger: { telegram: …, max: … } */
+  const linksFor = (fn, param) => Object.fromEntries(platforms.map((pf) => [pf, fn(param, pf)]).filter(([, l]) => l));
   /** Opens the mini app directly (used where the person is already in the chat, e.g. return after payment). */
-  function appDirectLink(param) {
-    const u = bot && bot.getUsername && bot.getUsername();
+  function appDirectLink(param, pf = messenger) {
+    const u = username(pf);
     if (!u) return "";
-    return messenger === "max" ? `https://max.ru/${u}?startapp=${param}` : `https://t.me/${u}?startapp=${param}`;
+    return pf === "max" ? `https://max.ru/${u}?startapp=${param}` : `https://t.me/${u}?startapp=${param}`;
   }
-  /** Sends to a customer; withButton adds the "open the shop" button. */
-  async function sendUser(id, text, withButton) {
-    if (!bot || !id) return false;
+  /** In which messenger a customer lives (old records — the main one). */
+  const platformOf = (id) => { const c = custDb().list[String(id)]; return (c && c.platform) || messenger; };
+  /** Sends to a person through the bot of his messenger; withButton adds the "open the shop" button. */
+  async function sendUser(id, text, withButton, pf) {
+    pf = pf || platformOf(id);
+    const b = botFor(pf);
+    if (!b || !id) return false;
     let extra = {};
-    if (withButton && bot.openButton) {
-      const b = bot.openButton(withButton === true ? "Открыть магазин" : withButton);
-      if (b) extra = messenger === "max" ? { buttons: b } : { reply_markup: b };
+    if (withButton && b.openButton) {
+      const btn = b.openButton(withButton === true ? "Открыть магазин" : withButton);
+      if (btn) extra = pf === "max" ? { buttons: btn } : { reply_markup: btn };
     }
-    try { await bot.sendMessage(id, text, extra); return true; } catch (e) { log.error("Send " + id + ": " + e.message); return false; }
+    try { await b.sendMessage(id, text, extra); return true; } catch (e) { log.error("Send " + id + ": " + e.message); return false; }
   }
   const ruDate = (d) => new Intl.DateTimeFormat("ru-RU", { timeZone: "Asia/Irkutsk", day: "2-digit", month: "2-digit" }).format(new Date(d));
 
   function userFrom(req) {
     const init = req.headers["x-init-data"] || "";
-    const u = M.validateInitData(init, config.botToken);
-    if (u) {
+    const hint = String(req.headers["x-platform"] || "");
+    // the messenger the app says it is in goes first; the signature decides (each bot has its own token)
+    for (const pf of [...platforms].sort((a, b) => (b === hint) - (a === hint))) {
+      const MM = messengers[pf];
+      const u = init && config.botTokens[pf] ? MM.validateInitData(init, config.botTokens[pf]) : null;
+      if (!u) continue;
       let startParam = "";
-      try { startParam = new URLSearchParams(M.extractWebAppData ? M.extractWebAppData(init) : init).get("start_param") || ""; } catch (e) { /* none */ }
+      try { startParam = new URLSearchParams(MM.extractWebAppData ? MM.extractWebAppData(init) : init).get("start_param") || ""; } catch (e) { /* none */ }
       // opened by the bot's button: Telegram buttons don't pass start_param, the app sends it from its own address (?start=…)
       if (!startParam) { const h = String(req.headers["x-start-param"] || ""); if (/^[A-Za-z0-9_-]{1,64}$/.test(h)) startParam = h; }
-      return Object.assign(u, { platform: messenger, startParam });
+      return Object.assign(u, { platform: pf, startParam });
     }
-    if (config.devMode) return { id: config.adminIds[0] || 1, first_name: "Dev", platform: messenger };
+    if (config.devMode) { const a = parseKey(config.adminIds[0] || "1"); return { id: Number(a.id), first_name: "Dev", platform: a.platform }; }
     return null;
   }
+  /* People with access are «messenger:id» — a Telegram id and a MAX id are different people even if the numbers match.
+     «123» without a mark (ADMIN_IDS, old ownerIds, old staff) is in the main messenger. */
+  function parseKey(v) { const m = /^(telegram|max):(-?\d+)$/.exec(String(v).trim()); return m ? { platform: m[1], id: m[2] } : { platform: messenger, id: String(v).trim() }; }
+  const keyOf = (pf, id) => (pf || messenger) + ":" + String(id);
   // Admins: ADMIN_IDS from .env plus the "owner" — the first person who sends /start when nobody is admin yet.
-  const ownerList = () => [...config.adminIds, ...((store.getCatalog().settings.ownerIds) || []).map(Number), ...(store.getCatalog().settings.staff || []).filter((x) => x.role === "owner").map((x) => Number(x.id))];
+  const ownerEntries = () => [...config.adminIds.map(parseKey), ...((store.getCatalog().settings.ownerIds) || []).map(parseKey),
+    ...(store.getCatalog().settings.staff || []).filter((x) => x.role === "owner").map((x) => ({ platform: x.platform || messenger, id: String(x.id) }))];
+  const ownerList = () => ownerEntries().map((e) => e.id);
   /* Staff: managers invited by the owner with a one-time link (settings.staff). They see orders, customers and the catalog;
      settings, payment details and the staff list stay with the owner. */
   const staffList = () => (store.getCatalog().settings.staff || []);
-  const adminList = () => [...new Set([...ownerList(), ...staffList().map((x) => Number(x.id))])];
-  const isAdmin = (u) => !!u && adminList().includes(Number(u.id));
-  const isOwner = (u) => !!u && ownerList().includes(Number(u.id));
+  const adminKeys = () => new Set([...ownerEntries().map((e) => keyOf(e.platform, e.id)), ...staffList().map((x) => keyOf(x.platform, x.id))]);
+  const adminList = () => [...adminKeys()];
+  const isAdmin = (u) => !!u && adminKeys().has(keyOf(u.platform, u.id));
+  const isOwner = (u) => !!u && ownerEntries().some((e) => keyOf(e.platform, e.id) === keyOf(u.platform, u.id));
   /** A link that opens the bot CHAT with /start <param> (the bot itself must see the invite). */
-  function chatLink(param) {
-    const u = bot && bot.getUsername && bot.getUsername();
+  function chatLink(param, pf = messenger) {
+    const u = username(pf);
     if (!u) return "";
-    return messenger === "max" ? `https://max.ru/${u}?start=${param}` : `https://t.me/${u}?start=${param}`;
+    return pf === "max" ? `https://max.ru/${u}?start=${param}` : `https://t.me/${u}?start=${param}`;
   }
-  function acceptInvite(from, code) {
+  function acceptInvite(from, code, pf = messenger) {
     const S = store.getCatalog().settings;
     const now = Date.now();
     S.invites = (S.invites || []).filter((x) => new Date(x.expiresAt).getTime() > now);
@@ -161,30 +200,30 @@ function createApp(opts = {}) {
     if (!inv) { store.setCatalog(store.getCatalog()); return "\n\n⚠️ Ссылка-приглашение уже использована или устарела. Попросите владельца прислать новую."; }
     S.invites = S.invites.filter((x) => x !== inv);
     const name = [from.first_name, from.last_name].filter(Boolean).join(" ") || (from.username ? "@" + from.username : "Сотрудник");
-    if (!isAdmin(from)) {
-      S.staff = staffList().concat([{ id: Number(from.id), name, username: from.username || "", role: inv.role === "owner" ? "owner" : "manager", notify: true, addedAt: new Date().toISOString() }]);
+    if (!isAdmin(Object.assign({}, from, { platform: pf }))) {
+      S.staff = staffList().concat([Object.assign({ id: Number(from.id), name, username: from.username || "", role: inv.role === "owner" ? "owner" : "manager", notify: true, addedAt: new Date().toISOString() }, pf !== messenger ? { platform: pf } : {})]);
     }
     store.setCatalog(store.getCatalog());
     const esc = (t) => String(t).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
     const own = inv.role === "owner";
-    for (const oid of ownerList()) if (String(oid) !== String(from.id)) sendUser(oid, `👤 <b>${esc(name)}</b> принял(а) приглашение и теперь ${own ? "владелец (полный доступ)" : "менеджер: видит заявки и получает их в чат"}.`).catch(() => {});
+    for (const o of ownerEntries()) if (keyOf(o.platform, o.id) !== keyOf(pf, from.id)) sendUser(o.id, `👤 <b>${esc(name)}</b> принял(а) приглашение${platforms.length > 1 ? ` (${PLATFORM_NAME[pf]})` : ""} и теперь ${own ? "владелец (полный доступ)" : "менеджер: видит заявки и получает их в чат"}.`, false, o.platform).catch(() => {});
     return own
       ? `\n\n✅ <b>Вы добавлены как владелец ${esc(S.brand || "")}.</b> Заявки будут приходить в этот чат, а в приложении появилась шестерёнка — там всё управление: заявки, товары, оплата, настройки, сотрудники.`
       : `\n\n✅ <b>Вы добавлены в сотрудники ${esc(S.brand || "")}.</b> Заявки будут приходить в этот чат, а в приложении появилась шестерёнка — там заявки, клиенты и товары.`;
   }
-  function claimOwner(from) {
+  function claimOwner(from, pf = messenger) {
     if (!from || !from.id || adminList().length) return "";
-    store.getCatalog().settings.ownerIds = [Number(from.id)];
+    store.getCatalog().settings.ownerIds = [pf === messenger ? Number(from.id) : keyOf(pf, from.id)];
     store.setCatalog(store.getCatalog());
     return "\n\n👑 <b>Вы назначены администратором.</b> В приложении у вас появилась шестерёнка — панель управления. Заявки будут приходить в этот чат.";
   }
   /** «Начать» in the bot chat: remember the customer (with the link's ref/source), mark the chat as saved. */
-  function onBotStart(from, payload = "") {
-    if (from && from.id && /^staff_[a-f0-9]{12}$/.test(payload)) return { text: acceptInvite(from, payload.slice(6)), appPayload: "" };
-    const owner = claimOwner(from);
+  function onBotStart(from, payload = "", pf = messenger) {
+    if (from && from.id && /^staff_[a-f0-9]{12}$/.test(payload)) return { text: acceptInvite(from, payload.slice(6), pf), appPayload: "" };
+    const owner = claimOwner(from, pf);
     if (!from || !from.id) return owner;
     const name = [from.first_name, from.last_name].filter(Boolean).join(" ");
-    const c = customers.touch({ id: from.id, first_name: name || from.first_name, username: from.username }, payload);
+    const c = customers.touch({ id: from.id, first_name: name || from.first_name, username: from.username, platform: pf }, payload);
     c.botStarted = true; store.saveCustomers();
     const st = LY.parseStart(payload);
     const product = (st.product || st.hint) && store.getCatalog().products.find((p) => String(p.id) === String(st.product || st.hint) && !p.hidden);
@@ -208,7 +247,7 @@ function createApp(opts = {}) {
     const L = loyal();
     delete settings.loyalty; delete settings.payments; delete settings.sources; delete settings.transfer;
     return {
-      platform: messenger,
+      platform: messenger, platforms,
       loyalty: { features: L.features, maxPayPercent: L.maxPayPercent, levels: L.levels, referral: L.referral, burnDays: L.burnDays, welcomeBonus: L.welcomeBonus, giftBonus: L.giftBonus },
       reviews: LY.on(L, "reviews") ? Object.assign(reviewsSummary(), { bonus: LY.on(L, "bonuses") ? L.reviewBonus : 0 }) : null,
       payments: { enabled: paymentsOn(), provider: paySettings().provider },
@@ -222,15 +261,19 @@ function createApp(opts = {}) {
     };
   }
 
+  /** Managers' chats, each through the bot of its messenger. Returns [{ id, platform }] that got the message. */
   async function notify(text) {
     const c = store.getCatalog();
-    const ids = new Set([...(c.settings.managerChatIds || []), config.managerChatId].map(String).filter(Boolean));
-    if (!ids.size) ids.add(String(ownerList()[0] || ""));
-    for (const x of staffList()) if (x.notify !== false) ids.add(String(x.id));
+    const to = new Map();
+    const add = (pf, id) => { if (id) to.set(keyOf(pf, id), { platform: pf || messenger, id: String(id) }); };
+    for (const x of [...(c.settings.managerChatIds || []), config.managerChatId].filter(Boolean)) { const k = parseKey(x); add(k.platform, k.id); }
+    if (!to.size && ownerEntries()[0]) add(ownerEntries()[0].platform, ownerEntries()[0].id);
+    for (const x of staffList()) if (x.notify !== false) add(x.platform || messenger, x.id);
     const results = [];
-    for (const id of ids) {
-      if (!id || !bot) continue;
-      try { await bot.sendMessage(id, text); results.push(id); } catch (e) { log.error("Notify " + id + ": " + e.message); }
+    for (const r of to.values()) {
+      const b = botFor(r.platform);
+      if (!b) continue;
+      try { await b.sendMessage(r.id, text); results.push(r); } catch (e) { log.error("Notify " + r.id + ": " + e.message); }
     }
     return results;
   }
@@ -243,14 +286,16 @@ function createApp(opts = {}) {
   }
   /** New order to the managers: the text first, then the photos of what was ordered (if the bot can send pictures). */
   async function notifyOrder(o) {
-    const sent = await notify(managerMessage(o, messenger, E()));
-    if (o.photosSent || !bot || !bot.sendPhotos || !sent.length) return sent;
+    const sent = await notify(managerMessage(o, o.platform || messenger, E()));
+    if (o.photosSent || !sent.length) return sent;
     const urls = [...new Set(o.totals.lines.map((l) => absUrl(l.image || "")).filter(Boolean))].slice(0, 6);
     if (!urls.length) return sent;
     o.photosSent = true; store.saveOrders();
     const titles = o.totals.lines.filter((l) => l.image).map((l) => l.title + (l.qty > 1 ? " × " + l.qty : "")).join(", ");
-    for (const id of sent) {
-      try { await bot.sendPhotos(id, urls, `Фото к заявке №${o.id}: ${titles}`.slice(0, 1000)); } catch (e) { log.error("Фото в заявку " + id + ": " + e.message); }
+    for (const r of sent) {
+      const b = botFor(r.platform);
+      if (!b || !b.sendPhotos) continue;
+      try { await b.sendPhotos(r.id, urls, `Фото к заявке №${o.id}: ${titles}`.slice(0, 1000)); } catch (e) { log.error("Фото в заявку " + r.id + ": " + e.message); }
     }
     return sent;
   }
@@ -281,11 +326,11 @@ function createApp(opts = {}) {
       if (st.paid) start.paid = st.paid;
       if (st.review) start.review = true;
     }
-    return { isAdmin: isAdmin(user), isOwner: isOwner(user), platform: messenger, startParam: user ? user.startParam || "" : "", start, user: user ? { id: user.id, first_name: user.first_name } : null };
+    return { isAdmin: isAdmin(user), isOwner: isOwner(user), platform: user ? user.platform : messenger, startParam: user ? user.startParam || "" : "", start, user: user ? { id: user.id, first_name: user.first_name } : null };
   });
 
   /* ---------- profile ---------- */
-  const needUser = (user) => { if (!user) throw httpError(401, `Откройте магазин через бота в ${PLATFORM_NAME[messenger]}.`); };
+  const needUser = (user) => { if (!user) throw httpError(401, `Откройте магазин через бота в ${PF_NAMES}.`); };
   const myOrders = (id) => store.getOrders().list.filter((o) => o.tgUser && String(o.tgUser.id) === String(id));
   function profileOf(user) {
     const L = loyal(), now = new Date();
@@ -297,11 +342,11 @@ function createApp(opts = {}) {
       level: Object.assign(LY.levelFor(L, st.spent), { spent: st.spent }),
       burning: LY.on(L, "bonuses") && LY.on(L, "burn") ? (() => { const b = LY.burningSoon(c, now, 30); return b ? { amount: b.amount, date: b.date } : null; })() : null,
       maxPayPercent: L.maxPayPercent,
-      refLink: LY.on(L, "referral") ? botLink("ref_" + c.refCode) : "",
-      refCode: c.refCode, linkBase: botLink(""),
+      refLink: LY.on(L, "referral") ? botLink("ref_" + c.refCode, user.platform) : "",
+      refCode: c.refCode, linkBase: botLink("", user.platform),
       // MAX: opening the app by a link doesn't add the bot chat — nudge to press «Начать» once
-      botStarted: messenger !== "max" || !!c.botStarted,
-      chatLink: messenger === "max" ? botLink("save") : "",
+      botStarted: user.platform !== "max" || !!c.botStarted,
+      chatLink: user.platform === "max" ? botLink("save", "max") : "",
       welcome: c.welcome && !c.welcomeSeen ? c.welcome : null,
       referral: L.referral, referredBy: !!c.referredBy,
       dates: LY.on(L, "dates") ? c.dates : [],
@@ -311,7 +356,7 @@ function createApp(opts = {}) {
         payMethod: o.payMethod || "", transferPayable: transferPayable(o), transferClaimed: !!o.transferClaimedAt,
         bonusUsed: o.bonusUsed || 0, bonusAccrued: o.bonusAccrued || 0, date: o.date, time: o.time,
         lines: o.totals.lines.map((l) => ({ id: l.id, qty: l.qty, choc: l.choc || [], title: l.title })),
-        giftLink: o.gift ? botLink("g_" + o.gift.id) : "",
+        giftLink: o.gift ? botLink("g_" + o.gift.id, user.platform) : "",
       })),
     };
   }
@@ -351,7 +396,7 @@ function createApp(opts = {}) {
   async function startPayment(order) {
     order.payAttempt = (order.payAttempt || 0) + 1;
     const p = payments();
-    const r = await p.create(order, { amount: order.toPay, returnUrl: appDirectLink("paid_" + order.id) || (store.getCatalog().settings.webAppUrl || ""), description: `${store.getCatalog().settings.brand || "Заказ"} — заказ №${order.id}` });
+    const r = await p.create(order, { amount: order.toPay, returnUrl: appDirectLink("paid_" + order.id, order.platform || messenger) || (store.getCatalog().settings.webAppUrl || ""), description: `${store.getCatalog().settings.brand || "Заказ"} — заказ №${order.id}` });
     order.paymentId = r.paymentId; store.saveOrders();
     return { provider: p.provider, url: r.url || "", token: r.demoToken || "", amount: order.toPay };
   }
@@ -416,7 +461,7 @@ function createApp(opts = {}) {
     return { ok: true, percent: p.percent, message: `Скидка ${p.percent}% применена${p.firstOrderOnly ? " (на первый заказ)" : ""}` };
   });
   on("POST", "/api/orders", async ({ body, user, ip }) => {
-    if (!user && config.botToken) throw httpError(401, `Откройте магазин через бота в ${PLATFORM_NAME[messenger]}, чтобы отправить заявку.`);
+    if (!user && platforms.some((pf) => config.botTokens[pf])) throw httpError(401, `Откройте магазин через бота в ${PF_NAMES}, чтобы отправить заявку.`);
     const key = user ? "u" + user.id : "ip" + ip;
     const recent = (orderTimes.get(key) || []).filter((t) => Date.now() - t < 10 * 60e3);
     if (recent.length >= 5) throw httpError(429, "Слишком много заявок подряд. Позвоните нам: менеджер поможет быстрее.");
@@ -425,6 +470,7 @@ function createApp(opts = {}) {
     const L = loyal();
     const c = user ? customers.touch(user, user.startParam) : null;
     order.bonusUsed = 0;
+    if (user && user.platform && user.platform !== messenger) order.platform = user.platform;
     store.addOrder(order);
     if (c) {
       if ("consent" in body) c.consent = !!body.consent;
@@ -440,7 +486,7 @@ function createApp(opts = {}) {
       const g = body.gift, clip = (v, n) => String(v == null ? "" : v).trim().slice(0, n);
       order.gift = { id: crypto.randomBytes(5).toString("hex"), from: clip(order.name.split(" ")[0], 40), to: clip(g.to, 40), text: clip(g.text, 300) };
     }
-    const giftLink = order.gift ? botLink("g_" + order.gift.id) : "";
+    const giftLink = order.gift ? botLink("g_" + order.gift.id, user ? user.platform : messenger) : "";
     store.saveOrders();
     recent.push(Date.now()); orderTimes.set(key, recent);
     trackEvent(store.getStats(), { type: "order" }); store.touchStats();
@@ -524,7 +570,7 @@ function createApp(opts = {}) {
     if (!S.sources.some((x) => x.slug === REVIEW_SOURCE.slug)) { S.sources.push(Object.assign({}, REVIEW_SOURCE)); store.setCatalog(store.getCatalog()); }
   }
   // the bot CHAT (?start=), in Telegram too: it works without a «main mini app» in BotFather and keeps the chat for bonus messages
-  const reviewCardLink = () => chatLink("rv_1-s_" + REVIEW_SOURCE.slug);
+  const reviewCardLink = (pf = messenger) => chatLink("rv_1-s_" + REVIEW_SOURCE.slug, pf);
   const reviewPhotoCount = new Map(); // user id → { day, n } — customers may add a few photos a day, not fill the disk
   const escH = (t) => String(t).replace(/[&<>]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[ch]));
 
@@ -587,7 +633,7 @@ function createApp(opts = {}) {
   on("GET", "/api/admin/reviews", () => {
     ensureReviewSource();
     const src = sourcesReport().find((x) => x.slug === REVIEW_SOURCE.slug) || {};
-    return { list: RV().list.slice(0, 300), link: reviewCardLink(), bonus: loyal().reviewBonus, enabled: LY.on(loyal(), "reviews"), link2gis: reviewLink2gis(), custom2gis: store.getCatalog().settings.review2gis || "",
+    return { list: RV().list.slice(0, 300), link: reviewCardLink(), links: linksFor(chatLink, "rv_1-s_" + REVIEW_SOURCE.slug), bonus: loyal().reviewBonus, enabled: LY.on(loyal(), "reviews"), link2gis: reviewLink2gis(), custom2gis: store.getCatalog().settings.review2gis || "",
       fromCard: { customers: src.customers || 0, orders: src.orders || 0, revenue: src.revenue || 0 } };
   }, { admin: true });
   on("PATCH", "/api/admin/reviews/:id", ({ params, body }) => {
@@ -694,13 +740,13 @@ function createApp(opts = {}) {
     return (store.getCatalog().settings.sources || []).map((src) => {
       const ids = new Set(all.filter((c) => c.source === src.slug).map((c) => c.id));
       const mine = orders.filter((o) => o.tgUser && ids.has(String(o.tgUser.id)) && o.status !== "cancel" && o.status !== "pay");
-      return Object.assign({}, src, { link: botLink("s_" + src.slug), customers: ids.size, orders: mine.length, revenue: mine.reduce((sum, o) => sum + (o.toPay ?? o.totals.total), 0) });
+      return Object.assign({}, src, { link: botLink("s_" + src.slug), links: linksFor(botLink, "s_" + src.slug), customers: ids.size, orders: mine.length, revenue: mine.reduce((sum, o) => sum + (o.toPay ?? o.totals.total), 0) });
     });
   }
   on("GET", "/api/admin/sources", () => {
     const all = Object.values(custDb().list);
     const other = { friend: "По ссылке друга", hint: "Через «Намекнуть»", gift: "Через цифровую открытку" };
-    return { sources: sourcesReport(), auto: Object.entries(other).map(([k, t]) => ({ slug: k, title: t, customers: all.filter((c) => c.source === k).length })), linkBase: botLink("") };
+    return { sources: sourcesReport(), auto: Object.entries(other).map(([k, t]) => ({ slug: k, title: t, customers: all.filter((c) => c.source === k).length })), linkBase: botLink("") || Object.values(linksFor(botLink, ""))[0] || "" };
   }, { admin: true });
   on("PUT", "/api/admin/sources", ({ body }) => {
     const seen = new Set();
@@ -711,7 +757,8 @@ function createApp(opts = {}) {
   }, { admin: true });
   on("GET", "/api/admin/qr", ({ query }) => {
     const slug = String(query.get("slug") || "");
-    const text = slug ? botLink("s_" + slug) : String(query.get("text") || "");
+    const qpf = platforms.includes(query.get("pf")) ? query.get("pf") : messenger;
+    const text = slug ? botLink("s_" + slug, qpf) : String(query.get("text") || "");
     if (!text || text.length > 500) throw httpError(400, "Нечего кодировать: бот ещё не подключён");
     const q = qrcode(0, "M"); q.addData(text); q.make();
     return { __raw: { type: "image/svg+xml; charset=utf-8", body: q.createSvgTag({ cellSize: 8, margin: 4, scalable: true }) } };
@@ -724,7 +771,7 @@ function createApp(opts = {}) {
     if (!LY.on(loyal(), "broadcasts")) throw httpError(400, "Рассылки выключены в настройках");
     const text = String(body.text || "").trim().slice(0, 3000);
     if (text.length < 3) throw httpError(400, "Напишите текст рассылки");
-    if (!bot) throw httpError(400, "Бот не подключён");
+    if (!anyBot()) throw httpError(400, "Бот не подключён");
     const segment = LY.SEGMENTS[body.segment] ? body.segment : "all";
     const list = recipients(segment);
     const rec = { id: Date.now().toString(36), at: new Date().toISOString(), segment, text, total: list.length, sent: 0, failed: 0, done: false };
@@ -848,19 +895,20 @@ function createApp(opts = {}) {
   /* ---------- admin: staff ---------- */
   function staffView() {
     const S = store.getCatalog().settings, cust = custDb().list, now = Date.now();
-    const staffIds = new Set(staffList().map((x) => String(x.id)));
-    const owners = ownerList().filter((id) => !staffIds.has(String(id))).map((id) => { const c = cust[String(id)]; return { id, name: (c && c.name) || "Владелец", username: (c && c.username) || "", role: "owner" }; });
-    return { owners, staff: staffList(), invites: (S.invites || []).filter((x) => new Date(x.expiresAt).getTime() > now).map((x) => ({ code: x.code, role: x.role || "manager", expiresAt: x.expiresAt, link: chatLink("staff_" + x.code) })) };
+    const staffKeys = new Set(staffList().map((x) => keyOf(x.platform, x.id)));
+    const owners = ownerEntries().filter((e) => !staffKeys.has(keyOf(e.platform, e.id))).map((e) => { const c = cust[String(e.id)]; return { id: Number(e.id), platform: e.platform, name: (c && c.name) || "Владелец", username: (c && c.username) || "", role: "owner" }; });
+    return { platforms, owners, staff: staffList().map((x) => Object.assign({ platform: messenger }, x)), invites: (S.invites || []).filter((x) => new Date(x.expiresAt).getTime() > now).map((x) => ({ code: x.code, role: x.role || "manager", expiresAt: x.expiresAt, link: chatLink("staff_" + x.code), links: linksFor(chatLink, "staff_" + x.code) })) };
   }
   on("GET", "/api/admin/staff", () => staffView(), { owner: true });
   on("POST", "/api/admin/staff/invite", ({ body }) => {
     const S = store.getCatalog().settings;
-    if (!chatLink("x")) throw httpError(400, "Бот ещё не подключён — пригласить не получится");
+    if (!Object.keys(linksFor(chatLink, "x")).length) throw httpError(400, "Бот ещё не подключён — пригласить не получится");
     const now = Date.now();
     S.invites = (S.invites || []).filter((x) => new Date(x.expiresAt).getTime() > now).slice(-9);
     const inv = { code: crypto.randomBytes(6).toString("hex"), role: body && body.role === "owner" ? "owner" : "manager", expiresAt: new Date(now + 864e5).toISOString() };
     S.invites.push(inv); store.setCatalog(store.getCatalog());
-    return Object.assign(staffView(), { link: chatLink("staff_" + inv.code) });
+    const links = linksFor(chatLink, "staff_" + inv.code);
+    return Object.assign(staffView(), { link: links[messenger] || Object.values(links)[0], links });
   }, { owner: true });
   on("PATCH", "/api/admin/staff/:id", ({ params, body }) => {
     const x = staffList().find((m) => String(m.id) === params.id);
@@ -873,10 +921,11 @@ function createApp(opts = {}) {
   on("DELETE", "/api/admin/staff/:id", ({ params, user }) => {
     if (String(user.id) === params.id) throw httpError(400, "Себя убрать нельзя");
     const S = store.getCatalog().settings;
-    if (!staffList().some((m) => String(m.id) === params.id)) throw httpError(404, "Сотрудник не найден");
-    S.staff = staffList().filter((m) => String(m.id) !== params.id);
+    const gone = staffList().find((m) => String(m.id) === params.id);
+    if (!gone) throw httpError(404, "Сотрудник не найден");
+    S.staff = staffList().filter((m) => m !== gone);
     store.setCatalog(store.getCatalog());
-    sendUser(params.id, `Доступ к управлению ${S.brand || "магазином"} закрыт владельцем.`).catch(() => {});
+    sendUser(params.id, `Доступ к управлению ${S.brand || "магазином"} закрыт владельцем.`, false, (gone && gone.platform) || messenger).catch(() => {});
     return staffView();
   }, { owner: true });
   on("DELETE", "/api/admin/staff/invite/:code", ({ params }) => {
@@ -895,7 +944,7 @@ function createApp(opts = {}) {
     return r;
   }, { admin: true });
   on("POST", "/api/admin/test-notify", async ({ user }) => {
-    if (!bot) throw httpError(400, "Бот не подключён: укажите BOT_TOKEN в настройках сервера.");
+    if (!anyBot()) throw httpError(400, "Бот не подключён: укажите BOT_TOKEN (Telegram) или MAX_BOT_TOKEN (MAX) в настройках сервера.");
     const sent = await notify(`${E()} <b>Тестовая заявка</b>\nЕсли вы видите это сообщение, заявки из мини-аппа будут приходить сюда.\nОтправил: ${user.first_name || user.id}`);
     if (!sent.length) throw httpError(400, "Не удалось отправить. Напишите боту /start с нужного аккаунта и проверьте ID в настройках.");
     return { ok: true, sent };
@@ -907,8 +956,8 @@ function createApp(opts = {}) {
   const bkSave = (st) => { fs.mkdirSync(path.dirname(bkStateFile), { recursive: true }); fs.writeFileSync(bkStateFile, JSON.stringify(st, null, 1)); };
   /** Who gets the copies: BACKUP_CHAT_IDS (env) or the first owner — the person who started the bot first (Ilya). */
   const backupTo = () => {
-    const env = String(process.env.BACKUP_CHAT_IDS || "").split(",").map((x) => x.trim()).filter((x) => /^-?\d{3,20}$/.test(x));
-    return env.length ? env : (store.getCatalog().settings.ownerIds || []).slice(0, 1).map(String);
+    const env = String(process.env.BACKUP_CHAT_IDS || "").split(",").map((x) => x.trim()).filter((x) => /^((telegram|max):)?-?\d{3,20}$/.test(x)).map(parseKey);
+    return env.length ? env : (store.getCatalog().settings.ownerIds || []).slice(0, 1).map(parseKey);
   };
   const ruDT = (d) => new Intl.DateTimeFormat("ru-RU", { timeZone: "Asia/Irkutsk", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(d));
   let bkRunning = false;
@@ -932,12 +981,14 @@ function createApp(opts = {}) {
         `\n\nСохраните файл. Как восстановить — внутри архива, файл «КАК-ВОССТАНОВИТЬ.txt».`;
       const to = backupTo(), sentTo = [];
       let sendError = "";
-      if (bot && bot.sendDocument) for (const id of to) {
-        try { await bot.sendDocument(id, buf, `${(S.brand || "shop").replace(/[^A-Za-z0-9]+/g, "-").toLowerCase()}-${name}`, caption); sentTo.push(id); }
-        catch (e) { sendError = e.message; log.error("Копия в чат " + id + ": " + e.message); }
+      for (const r of to) {
+        const b = botFor(r.platform);
+        if (!b || !b.sendDocument) continue;
+        try { await b.sendDocument(r.id, buf, `${(S.brand || "shop").replace(/[^A-Za-z0-9]+/g, "-").toLowerCase()}-${name}`, caption); sentTo.push(r.id); }
+        catch (e) { sendError = e.message; log.error("Копия в чат " + r.id + ": " + e.message); }
       }
       const next = Object.assign(st, { day: LY.todayLocal(now), lastAt: now.toISOString(), lastName: name, lastSize: buf.length, lastSent: sentTo.length, lastError: sendError || (to.length ? "" : "Некому отправить: нет владельца") });
-      if (withPhotos && (sentTo.length || !to.length || !bot)) Object.assign(next, { photosSig: sig, photosAt: now.toISOString(), photosName: name });
+      if (withPhotos && (sentTo.length || !to.length || !anyBot())) Object.assign(next, { photosSig: sig, photosAt: now.toISOString(), photosName: name });
       bkSave(next);
       return { name, size: buf.length, withPhotos, sentTo: sentTo.length, error: next.lastError };
     } finally { bkRunning = false; }
@@ -950,10 +1001,10 @@ function createApp(opts = {}) {
   }
   on("GET", "/api/admin/backup", () => backupStatus(), { owner: true });
   on("POST", "/api/admin/backup", async () => Object.assign(await runBackup({ full: true }), { status: backupStatus() }), { owner: true });
-  if (restored.length && bot) {
+  if (restored.length && anyBot()) {
     const t = setTimeout(() => {
       const last = restored[restored.length - 1];
-      for (const id of backupTo()) sendUser(id, `✅ <b>Магазин восстановлен из копии</b> от ${ruDT(last.createdAt)}.\nЗагружено: ${last.files.join(", ")}${restored.some((m) => m.restoredPhotos) ? `, фото: ${restored.reduce((a, m) => a + m.restoredPhotos, 0)}` : ""}.`).catch(() => {});
+      for (const r of backupTo()) sendUser(r.id, `✅ <b>Магазин восстановлен из копии</b> от ${ruDT(last.createdAt)}.\nЗагружено: ${last.files.join(", ")}${restored.some((m) => m.restoredPhotos) ? `, фото: ${restored.reduce((a, m) => a + m.restoredPhotos, 0)}` : ""}.`, false, r.platform).catch(() => {});
     }, 4000);
     if (t.unref) t.unref();
   }
@@ -1026,15 +1077,16 @@ function createApp(opts = {}) {
   // (e.g. https://sweetroses-xxx.amvera.io) and point the bot's buttons at it.
   const HOST_SUFFIXES = (process.env.PUBLIC_HOST_SUFFIXES || ".amvera.io,.amvera.app,.amvera.tech").split(",").map((x) => x.trim().toLowerCase()).filter(Boolean);
   function detectPublicUrl(req) {
-    if (process.env.WEBAPP_URL || !bot || !bot.setWebAppUrl) return;
+    const setAll = (u) => { for (const pf of platforms) { const b = bots[pf]; if (b && b.setWebAppUrl) b.setWebAppUrl(u); } };
+    if (process.env.WEBAPP_URL || !anyBot()) return;
     const s = store.getCatalog().settings;
-    if (s.webAppUrl) { bot.setWebAppUrl(s.webAppUrl); return; } // learned once, never overwritten by request headers
+    if (s.webAppUrl) { setAll(s.webAppUrl); return; } // learned once, never overwritten by request headers
     const host = String(req.headers.host || "").trim().toLowerCase().replace(/:\d+$/, "");
     if (!/^[a-z0-9.-]+$/.test(host) || !HOST_SUFFIXES.some((suf) => host.endsWith(suf))) return;
     s.webAppUrl = "https://" + host;
     store.setCatalog(store.getCatalog());
     if (log.log) log.log("Адрес мини-аппа: " + s.webAppUrl);
-    bot.setWebAppUrl(s.webAppUrl);
+    setAll(s.webAppUrl);
   }
 
   const server = http.createServer(async (req, res) => {
@@ -1110,7 +1162,7 @@ function createApp(opts = {}) {
     if (!opts.noBackup && hour >= 3 && bkState().day !== today) { try { await runBackup({ now }); } catch (e) { log.error("Ночная копия: " + e.message); } }
   }
 
-  return { server, store, bot, config, isAdmin, claimOwner, onBotStart, greeting, customers, runJobs, runBackup, backupStatus, restored };
+  return { server, store, bot, bots, config, isAdmin, claimOwner, onBotStart, greeting, customers, runJobs, runBackup, backupStatus, restored };
 }
 
 if (require.main === module) {
@@ -1118,8 +1170,10 @@ if (require.main === module) {
   const port = Number(process.env.PORT || 3000);
   app.server.listen(port, () => {
     console.log(`Sweet Roses mini app: http://localhost:${port}`);
-    if (!app.config.botToken) console.log((app.config.messenger === "max" ? "MAX_BOT_TOKEN" : "BOT_TOKEN") + " не задан — бот выключен, заявки сохраняются только в админке.");
-    else console.log("Мессенджер: " + PLATFORM_NAME[app.config.messenger]);
+    for (const pf of app.config.platforms) {
+      if (!app.config.botTokens[pf]) console.log((pf === "max" ? "MAX_BOT_TOKEN" : "BOT_TOKEN") + " не задан — бот " + PLATFORM_NAME[pf] + " выключен.");
+      else console.log("Мессенджер: " + PLATFORM_NAME[pf]);
+    }
     if (process.env.WEBAPP_URL) console.log("Адрес мини-аппа: " + process.env.WEBAPP_URL);
   });
   // A light seed may ship without products: then the catalog is loaded from the Sweet Roses site on first start.
@@ -1133,10 +1187,13 @@ if (require.main === module) {
       console.log(`Каталог загружен с сайта: ${r.added} товаров`);
     } catch (e) { console.error("Не удалось загрузить каталог с сайта (" + e.message + "), повтор через минуту"); setTimeout(ensureProducts, 60e3); }
   })();
-  if (app.bot) app.bot.startPolling({ isAdmin: (id) => app.isAdmin({ id }), onStart: (from, payload) => app.onBotStart(from, payload), greeting: app.greeting });
+  for (const pf of app.config.platforms) {
+    const b = app.bots[pf];
+    if (b) b.startPolling({ isAdmin: (id) => app.isAdmin({ id, platform: pf }), onStart: (from, payload) => app.onBotStart(from, payload, pf), greeting: app.greeting });
+  }
   setInterval(() => app.runJobs().catch((e) => console.error("Фоновые задачи: " + e.message)), 5 * 60e3).unref();
   setTimeout(() => app.runJobs().catch(() => {}), 20e3).unref();
-  const shutdown = () => { app.store.flush(); if (app.bot) app.bot.stop(); process.exit(0); };
+  const shutdown = () => { app.store.flush(); for (const b of Object.values(app.bots)) if (b) b.stop(); process.exit(0); };
   process.on("SIGINT", shutdown); process.on("SIGTERM", shutdown);
 }
 

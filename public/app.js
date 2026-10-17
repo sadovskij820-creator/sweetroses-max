@@ -984,6 +984,15 @@
     while (list.some((x) => x.slug === s)) s = b + i++;
     return s;
   }
+  const PF_LABEL = { telegram: "Telegram", max: "MAX" };
+  /** Links per messenger: one block when the shop is in one messenger, a block for each when in both. */
+  const pfList = (links, single) => { const l = links ? Object.entries(links).filter(([, v]) => v) : []; return l.length > 1 ? l : single ? [["", single]] : l; };
+  function qrBlocks(links, single, file) {
+    return pfList(links, single).map(([pf, link]) => `<div class="src-body"><img class="qr" alt="QR-код" data-qr-text="${esc(link)}" src="">
+          <div>${pf ? `<div style="font-weight:600;margin-bottom:4px">${PF_LABEL[pf] || pf}</div>` : ""}<div class="src-link">${esc(link)}</div>
+          <button class="btn ghost small" style="margin-top:8px" data-action="copyText" data-text="${esc(link)}">Скопировать ссылку</button>
+          <a class="btn ghost small" style="margin-top:6px" data-qr-dl="${esc(link)}" download="qr-${esc(file)}${pf ? "-" + pf : ""}.svg">Скачать QR</a></div></div>`).join("");
+  }
   function adminPromo(d) {
     if (!d.linkBase) return `<p class="muted">Ссылки появятся, когда приложение подключат к боту.</p>`;
     const ownQr = (slug) => `/api/admin/qr?slug=${encodeURIComponent(slug)}`;
@@ -993,10 +1002,7 @@
       ${d.sources.map((x) => `<div class="src-card">
         <div class="src-h"><b>${esc(x.title)}</b><button class="icon-x" data-action="delSource" data-slug="${esc(x.slug)}" aria-label="Удалить">×</button></div>
         <div class="src-stats"><span><b>${x.customers}</b> пришло</span><span><b>${x.orders}</b> заказов</span><span><b>${rub(x.revenue)}</b></span></div>
-        <div class="src-body"><img class="qr" alt="QR-код" data-qr="${esc(x.slug)}" src="">
-          <div><div class="src-link">${esc(x.link)}</div>
-          <button class="btn ghost small" style="margin-top:8px" data-action="copyText" data-text="${esc(x.link)}">Скопировать ссылку</button>
-          <a class="btn ghost small" style="margin-top:6px" data-qr-dl="${esc(x.slug)}" download="qr-${esc(x.slug)}.svg">Скачать QR</a></div></div></div>`).join("")}
+        ${qrBlocks(x.links, x.link, x.slug)}</div>`).join("")}
       <h2 class="h2" style="font-size:22px">Пришли от других покупателей</h2>
       ${d.auto.map((x) => `<div class="addon"><span class="t">${esc(x.title)}</span><span class="p">${x.customers} чел.</span></div>`).join("")}`;
   }
@@ -1013,10 +1019,7 @@
       <div class="src-card">
         <div class="src-h"><b>QR для вкладыша в букет</b></div>
         <div class="src-stats"><span><b>${d.fromCard.customers}</b> пришло по QR</span><span><b>${d.fromCard.orders}</b> заказов</span><span><b>${rub(d.fromCard.revenue)}</b></span></div>
-        ${d.link ? `<div class="src-body"><img class="qr" alt="QR-код" data-qr-text="${esc(d.link)}" src="">
-          <div><div class="src-link">${esc(d.link)}</div>
-          <button class="btn ghost small" style="margin-top:8px" data-action="copyText" data-text="${esc(d.link)}">Скопировать ссылку</button>
-          <a class="btn ghost small" style="margin-top:6px" data-qr-text-dl="1" download="qr-otzyv.svg">Скачать QR</a></div></div>` : `<p class="muted">QR появится, когда приложение подключат к боту.</p>`}
+        ${pfList(d.links, d.link).length ? qrBlocks(d.links, d.link, "otzyv") : `<p class="muted">QR появится, когда приложение подключат к боту.</p>`}
       </div>
       ${owner ? `<details class="history" style="margin-top:10px"><summary>Ссылка на отзывы в 2ГИС${d.link2gis ? "" : " — не указана"}</summary>
         <form data-form="review2gis" style="margin-top:8px"><input class="input" name="review2gis" value="${esc(d.custom2gis)}" placeholder="${esc(d.link2gis || "https://2gis.ru/…/firm/…/tab/reviews")}">
@@ -1040,20 +1043,12 @@
   }
   /** QR images need the admin's signature header, so they are fetched and inlined. */
   async function fillQr() {
-    for (const img of $app.querySelectorAll("img[data-qr]:not([src^=blob])")) {
-      try {
-        const r = await fetch(`/api/admin/qr?slug=${encodeURIComponent(img.dataset.qr)}`, { headers: { "X-Init-Data": INIT_DATA } });
-        const url = URL.createObjectURL(await r.blob());
-        img.src = url;
-        const a = $app.querySelector(`[data-qr-dl="${img.dataset.qr}"]`); if (a) a.href = url;
-      } catch (e) { /* ignore */ }
-    }
     for (const img of $app.querySelectorAll("img[data-qr-text]:not([src^=blob])")) {
       try {
         const r = await fetch(`/api/admin/qr?text=${encodeURIComponent(img.dataset.qrText)}`, { headers: { "X-Init-Data": INIT_DATA } });
         const url = URL.createObjectURL(await r.blob());
         img.src = url;
-        const a = $app.querySelector("[data-qr-text-dl]"); if (a) a.href = url;
+        for (const a of $app.querySelectorAll("a[data-qr-dl]")) if (a.dataset.qrDl === img.dataset.qrText) a.href = url;
       } catch (e) { /* ignore */ }
     }
   }
@@ -1098,14 +1093,15 @@
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px"><button class="btn" data-action="staffInvite" data-role="owner">+ Владельца</button><button class="btn soft" data-action="staffInvite" data-role="manager">+ Менеджера</button></div>
       ${state.admin.inviteLink ? `<div class="info-card" style="margin-top:12px"><p><b>Ссылка-приглашение готова${state.admin.inviteRole === "owner" ? " — роль: владелец" : " — роль: менеджер"}</b></p>
         <p class="muted" style="font-size:13px;margin-top:4px">Отправьте её сотруднику. Он откроет её и нажмёт «Старт» — и сразу станет менеджером. Ссылка одноразовая, действует сутки.</p>
-        <div class="src-link" style="margin-top:8px">${esc(state.admin.inviteLink)}</div>
-        <div style="display:flex;gap:8px;margin-top:10px"><button class="btn small" data-action="shareInvite">Отправить</button><button class="btn soft small" data-action="copyText" data-text="${esc(state.admin.inviteLink)}">Скопировать</button></div></div>` : ""}
+        ${pfList(state.admin.inviteLinks, state.admin.inviteLink).length > 1 ? `<p class="muted" style="font-size:13px;margin-top:4px">Отправьте ту ссылку, в каком мессенджере сотрудник будет принимать заявки.</p>` : ""}
+        ${pfList(state.admin.inviteLinks, state.admin.inviteLink).map(([pf, link]) => `${pf ? `<div style="font-weight:600;margin-top:10px">${PF_LABEL[pf] || pf}</div>` : ""}<div class="src-link" style="margin-top:6px">${esc(link)}</div>
+        <div style="display:flex;gap:8px;margin-top:8px"><button class="btn small" data-action="shareInvite" data-link="${esc(link)}">Отправить</button><button class="btn soft small" data-action="copyText" data-text="${esc(link)}">Скопировать</button></div>`).join("")}</div>` : ""}
       <h2 class="h2" style="font-size:22px">Кто имеет доступ</h2>
-      ${d.owners.map((o) => `<div class="cust-row"><span class="av">${esc((o.name || "?").slice(0, 1))}</span><span class="mid"><b>${esc(o.name)}</b><small>${o.username ? "@" + esc(o.username) : "ID " + esc(String(o.id))}</small></span><span class="rt"><span class="seg-badge seg-regular">Владелец</span></span></div>`).join("")}
-      ${d.staff.map((m) => `<div class="cust-row"><span class="av">${esc((m.name || "?").slice(0, 1))}</span><span class="mid"><b>${esc(m.name)}</b><small>${m.username ? "@" + esc(m.username) + " · " : ""}${m.role === "owner" ? "владелец" : "менеджер"} с ${ddmm(m.addedAt)}</small>
+      ${d.owners.map((o) => `<div class="cust-row"><span class="av">${esc((o.name || "?").slice(0, 1))}</span><span class="mid"><b>${esc(o.name)}</b><small>${o.username ? "@" + esc(o.username) : "ID " + esc(String(o.id))}${o.platform && (d.platforms || []).length > 1 ? " · " + (PF_LABEL[o.platform] || o.platform) : ""}</small></span><span class="rt"><span class="seg-badge seg-regular">Владелец</span></span></div>`).join("")}
+      ${d.staff.map((m) => `<div class="cust-row"><span class="av">${esc((m.name || "?").slice(0, 1))}</span><span class="mid"><b>${esc(m.name)}</b><small>${m.username ? "@" + esc(m.username) + " · " : ""}${m.role === "owner" ? "владелец" : "менеджер"} с ${ddmm(m.addedAt)}${m.platform && (d.platforms || []).length > 1 ? " · " + (PF_LABEL[m.platform] || m.platform) : ""}</small>
         <label class="check" style="margin:6px 0 0;font-size:12.5px"><input type="checkbox" data-action="staffNotify" data-id="${esc(String(m.id))}" ${m.notify !== false ? "checked" : ""}>Получает заявки в чат</label></span>
         <span class="rt">${m.role === "owner" ? `<span class="seg-badge seg-regular" style="display:block;margin-bottom:6px">Владелец</span>` : ""}<button class="btn ghost small" data-action="staffRemove" data-id="${esc(String(m.id))}" data-name="${esc(m.name)}">Убрать</button></span></div>`).join("") || `<p class="muted">Менеджеров пока нет.</p>`}
-      ${d.invites.length ? `<h2 class="h2" style="font-size:22px">Неиспользованные приглашения</h2>${d.invites.map((x) => `<div class="addon"><span class="t">${x.role === "owner" ? "Владелец" : "Менеджер"} · до ${dt(x.expiresAt)}</span><span class="p"><button class="btn ghost small" data-action="copyText" data-text="${esc(x.link)}">Скопировать</button> <button class="icon-x" data-action="inviteDel" data-code="${esc(x.code)}" aria-label="Отменить">×</button></span></div>`).join("")}` : ""}`;
+      ${d.invites.length ? `<h2 class="h2" style="font-size:22px">Неиспользованные приглашения</h2>${d.invites.map((x) => `<div class="addon"><span class="t">${x.role === "owner" ? "Владелец" : "Менеджер"} · до ${dt(x.expiresAt)}</span><span class="p">${pfList(x.links, x.link).map(([pf, link]) => `<button class="btn ghost small" data-action="copyText" data-text="${esc(link)}">${pf ? PF_LABEL[pf] || pf : "Скопировать"}</button> `).join("")}<button class="icon-x" data-action="inviteDel" data-code="${esc(x.code)}" aria-label="Отменить">×</button></span></div>`).join("")}` : ""}`;
   }
   function adminTransfer(d) {
     const T = d.transferResolved || {};
@@ -1171,7 +1167,7 @@
     if (host && host.BackButton) { try { root ? host.BackButton.hide() : host.BackButton.show(); } catch (e) {} }
     const af = $app.querySelector("[autofocus]"); if (af) af.focus();
     bindGallery();
-    if ($app.querySelector("img[data-qr], img[data-qr-text]")) fillQr();
+    if ($app.querySelector("img[data-qr-text]")) fillQr();
   }
   function bindGallery() {
     const g = $app.querySelector("[data-gallery]");
@@ -1250,10 +1246,10 @@
     }
     if (act === "staffInvite") {
       const r = await adminCall("/api/admin/staff/invite", "POST", { role: ds.role }, null);
-      if (r) { state.admin.inviteLink = r.link; state.admin.inviteRole = ds.role; state.admin.data = r; state.admin.tab = "staff"; render(); }
+      if (r) { state.admin.inviteLink = r.link; state.admin.inviteLinks = r.links; state.admin.inviteRole = ds.role; state.admin.data = r; state.admin.tab = "staff"; render(); }
       return;
     }
-    if (act === "shareInvite") return shareLink(`Приглашение в управление ${state.catalog.settings.brand}: откройте ссылку и нажмите «Старт»`, state.admin.inviteLink);
+    if (act === "shareInvite") return shareLink(`Приглашение в управление ${state.catalog.settings.brand}: откройте ссылку и нажмите «Старт»`, ds.link || state.admin.inviteLink);
     if (act === "staffNotify") { await adminCall(`/api/admin/staff/${ds.id}`, "PATCH", { notify: el.checked }, "staff"); return; }
     if (act === "staffRemove") {
       const go = () => adminCall(`/api/admin/staff/${ds.id}`, "DELETE", null, "staff").then((r) => r && toast("Доступ закрыт"));
