@@ -932,6 +932,9 @@
     <h2 class="h2" style="font-size:22px">Посетители за 14 дней</h2>
     <div class="bars" role="img" aria-label="Посетители по дням">${d.days.map((x) => `<i style="height:${(x.visitors / max) * 100}%" title="${x.date}: ${x.visitors}"></i>`).join("")}</div>
     <div style="display:flex;justify-content:space-between;font-size:11px" class="muted"><span>${d.days[0] ? d.days[0].date.slice(5) : ""}</span><span>сегодня</span></div>
+    ${d.sources ? `<h2 class="h2" style="font-size:22px">Откуда клиенты</h2>
+    <p class="muted" style="font-size:12.5px;margin-top:-6px">За всё время: сколько людей пришло, сколько из них купили, заказы и сумма. «+N» — новые за 30 дней. Ссылки и QR — во вкладке «Ссылки и QR».</p>
+    ${d.sources.map((x) => `<div class="addon" style="align-items:flex-start"><span class="t">${esc(x.title)}${x.month ? ` <small class="muted">+${x.month}</small>` : ""}</span><span class="p" style="text-align:right">${x.customers} чел. · купили ${x.buyers}<br><small class="muted">${x.orders} ${plural(x.orders, "заказ", "заказа", "заказов")} · ${rub(x.revenue)}</small></span></div>`).join("")}` : ""}
     <h2 class="h2" style="font-size:22px">Чаще всего смотрят</h2>
     ${d.topProducts.length ? d.topProducts.map((p) => `<div class="addon"><span class="t">${esc(p.title)}</span><span class="p">${p.views} просм. · ${p.carts} в корзину</span></div>`).join("") : `<p class="muted">Пока нет данных.</p>`}`;
   }
@@ -949,7 +952,7 @@
   function adminCustomer(c) {
     return `<a class="btn ghost small" href="#/admin/customers">Назад к клиентам</a>
       <h2 class="h2" style="margin-top:14px">${esc(c.name || "Без имени")}</h2>
-      <p class="muted" style="margin:-6px 0 10px">${esc([c.phone, c.username ? "@" + c.username : ""].filter(Boolean).join(" · "))}${c.consent ? " · согласен на рассылки" : ""}</p>
+      <p class="muted" style="margin:-6px 0 10px">${esc([c.phone, c.username ? "@" + c.username : ""].filter(Boolean).join(" · "))}${c.consent ? " · согласен на рассылки" : ""}${c.source ? `<br>Откуда: ${esc(c.source)}` : ""}</p>
       <div class="stat-grid">
         <div class="stat"><b>${c.orders}</b><span>заказов</span></div><div class="stat"><b>${rub(c.spent)}</b><span>выполнено на сумму</span></div>
         <div class="stat"><b>${c.balance}</b><span>бонусов · ${esc(c.level)}</span></div><div class="stat"><b>${SEG[c.segment]}</b><span>${c.lastOrderAt ? "последний заказ " + ddmm(c.lastOrderAt) : "ещё не заказывал"}</span></div>
@@ -1000,7 +1003,8 @@
       <form class="date-form" onsubmit="return false"><input class="input" name="stitle" placeholder="Например: Авито, наклейка на коробке, блогер Маша" maxlength="60">
         <button class="btn soft block" type="button" style="margin-top:8px" data-action="addSource">Создать ссылку и QR-код</button></form>
       ${d.sources.map((x) => `<div class="src-card">
-        <div class="src-h"><b>${esc(x.title)}</b><button class="icon-x" data-action="delSource" data-slug="${esc(x.slug)}" aria-label="Удалить">×</button></div>
+        <div class="src-h"><b>${esc(x.title)}</b>${x.std ? "" : `<button class="icon-x" data-action="delSource" data-slug="${esc(x.slug)}" aria-label="Удалить">×</button>`}</div>
+        ${x.hint ? `<p class="muted" style="font-size:12.5px;margin:2px 0 6px">${esc(x.hint)}</p>` : ""}
         <div class="src-stats"><span><b>${x.customers}</b> пришло</span><span><b>${x.orders}</b> заказов</span><span><b>${rub(x.revenue)}</b></span></div>
         ${qrBlocks(x.links, x.link, x.slug)}</div>`).join("")}
       <h2 class="h2" style="font-size:22px">Пришли от других покупателей</h2>

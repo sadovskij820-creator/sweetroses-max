@@ -77,7 +77,11 @@ test("sources: admin creates links, sees customers/orders per source, gets a QR 
   const { app, url } = await startApp();
   const put = await req(url + "/api/admin/sources", "PUT", { sources: [{ title: "Наклейка на коробке", slug: "box" }, { title: "Авито", slug: "avito" }, { title: "плохой", slug: "Плохо!" }] }, asUser(100));
   assert.equal(put.status, 200);
-  assert.equal(put.data.sources.length, 2);
+  assert.deepEqual(put.data.sources.filter((x) => !x.std).map((x) => x.slug), ["box", "avito"]);
+  assert.deepEqual(put.data.sources.filter((x) => x.std).map((x) => x.slug).sort(), ["2gis", "insta", "otzyv", "stoyka", "tgkanal"], "standard places always exist");
+  // a standard place can't be deleted
+  const del = await req(url + "/api/admin/sources", "PUT", { sources: [{ title: "Наклейка на коробке", slug: "box" }, { title: "Авито", slug: "avito" }] }, asUser(100));
+  assert.ok(del.data.sources.some((x) => x.slug === "stoyka"));
   await req(url + "/api/me", "GET", null, asUser(7, "s_box"));
   await req(url + "/api/orders", "POST", order(), asUser(7));
   await req(url + "/api/me", "GET", null, asUser(8, "s_box"));
@@ -91,6 +95,19 @@ test("sources: admin creates links, sees customers/orders per source, gets a QR 
   assert.match(qr.headers.get("content-type"), /svg/);
   assert.match(await qr.text(), /^<svg/);
   assert.equal((await fetch(url + "/api/admin/qr?slug=box", { headers: { "X-Init-Data": asUser(7) } })).status, 403);
+  // «Откуда клиенты» in the statistics: stand, 2GIS, friend, no mark
+  await req(url + "/api/me", "GET", null, asUser(9, "s_stoyka"));
+  await req(url + "/api/me", "GET", null, asUser(10, "s_2gis"));
+  await req(url + "/api/me", "GET", null, asUser(11));
+  const st = (await req(url + "/api/admin/stats", "GET", null, asUser(100))).data.sources;
+  const row = (slug) => st.find((x) => x.slug === slug);
+  assert.deepEqual([row("box").customers, row("box").buyers, row("box").orders], [2, 1, 1]);
+  assert.equal(row("stoyka").title, "Стойка в магазине"); assert.equal(row("stoyka").customers, 1);
+  assert.equal(row("2gis").customers, 1); assert.equal(row("insta").customers, 0, "standard places are shown even with 0");
+  assert.ok(row("").customers >= 1); assert.match(row("").title, /Без метки/);
+  assert.equal(st[0].slug, "box", "the biggest first");
+  const card = (await req(url + "/api/admin/customers/9", "GET", null, asUser(100))).data;
+  assert.equal(card.source, "Стойка в магазине");
   app.server.close();
 });
 

@@ -566,10 +566,38 @@ function createApp(opts = {}) {
     const m = /^(https:\/\/2gis\.ru\/[a-z-]+\/firm\/\d+)/.exec(s.map2gis || "");
     return m ? m[1] + "/tab/reviews" : "";
   }
+  /** Places every shop has: their links/QR exist from the start and can't be deleted (so the statistics is always comparable). */
+  const STD_SOURCES = [
+    { slug: "stoyka", title: "Стойка в магазине", hint: "QR на табличке у кассы: покупатель сканирует — получает бонусы и попадает в базу." },
+    REVIEW_SOURCE,
+    { slug: "2gis", title: "2ГИС", hint: "Ссылку вставьте в карточку 2ГИС: «Сайт» или «Мессенджеры», и в ответы на отзывы." },
+    { slug: "insta", title: "Instagram", hint: "Ссылку — в шапку профиля и в сторис со ссылкой." },
+    { slug: "tgkanal", title: "Telegram-канал", hint: "Ссылку — в закреплённый пост и в подпись к постам с букетами." },
+  ];
+  const STD_SLUGS = new Set(STD_SOURCES.map((x) => x.slug));
   function ensureReviewSource() {
     const S = store.getCatalog().settings;
     S.sources = S.sources || [];
-    if (!S.sources.some((x) => x.slug === REVIEW_SOURCE.slug)) { S.sources.push(Object.assign({}, REVIEW_SOURCE)); store.setCatalog(store.getCatalog()); }
+    const missing = STD_SOURCES.filter((x) => !S.sources.some((y) => y.slug === x.slug));
+    if (missing.length) { S.sources = missing.map((x) => ({ slug: x.slug, title: x.title })).concat(S.sources); store.setCatalog(store.getCatalog()); }
+  }
+  const AUTO_SOURCES = { friend: "Пригласили друзья («Приведи друга»)", hint: "Через «Намекнуть»", gift: "Получили цифровую открытку" };
+  const sourceTitle = (slug) => { if (!slug) return "Без метки (нашли сами)"; const s = (store.getCatalog().settings.sources || []).find((x) => x.slug === slug); return s ? s.title : AUTO_SOURCES[slug] || slug; };
+  /** «Откуда клиенты»: every source with people, orders and money, the biggest first. */
+  function sourceStats(now = new Date()) {
+    ensureReviewSource();
+    const all = Object.values(custDb().list), orders = store.getOrders().list.filter((o) => o.tgUser && o.status !== "cancel" && o.status !== "pay");
+    const month = now.getTime() - 30 * 864e5;
+    const slugs = [...(store.getCatalog().settings.sources || []).map((x) => x.slug), ...Object.keys(AUTO_SOURCES), ""];
+    for (const c of all) if (!slugs.includes(c.source || "")) slugs.push(c.source);
+    const rows = slugs.map((slug) => {
+      const ids = new Set(all.filter((c) => (c.source || "") === slug).map((c) => String(c.id)));
+      const mine = orders.filter((o) => ids.has(String(o.tgUser.id)));
+      const buyers = new Set(mine.map((o) => String(o.tgUser.id)));
+      return { slug, title: sourceTitle(slug), customers: ids.size, month: all.filter((c) => (c.source || "") === slug && new Date(c.createdAt).getTime() >= month).length,
+        buyers: buyers.size, orders: mine.length, revenue: mine.reduce((sum, o) => sum + (o.toPay ?? o.totals.total), 0) };
+    });
+    return rows.filter((r) => r.customers || STD_SLUGS.has(r.slug)).sort((a, b) => b.customers - a.customers || b.revenue - a.revenue);
   }
   // the bot CHAT (?start=), in Telegram too: it works without a «main mini app» in BotFather and keeps the chat for bonus messages
   const reviewCardLink = (pf = messenger) => chatLink("rv_1-s_" + REVIEW_SOURCE.slug, pf);
@@ -712,7 +740,7 @@ function createApp(opts = {}) {
   function customerRow(c, now = new Date()) {
     const st = LY.orderStatsFor(store.getOrders(), c.id);
     return { id: c.id, name: c.name, username: c.username, phone: c.phone, orders: st.count, spent: st.spent, lastOrderAt: st.lastOrderAt, createdAt: c.createdAt,
-      balance: LY.balance(c, now), level: LY.levelFor(loyal(), st.spent).name, segment: LY.segmentOf(st, c, now), consent: c.consent, dates: c.dates.length };
+      balance: LY.balance(c, now), level: LY.levelFor(loyal(), st.spent).name, segment: LY.segmentOf(st, c, now), consent: c.consent, dates: c.dates.length, source: sourceTitle(c.source || "") };
   }
   const listCustomers = (segment = "all", q = "") => {
     const ql = String(q || "").toLowerCase().trim();
@@ -741,21 +769,25 @@ function createApp(opts = {}) {
   /* ---------- admin: ad sources & QR codes ---------- */
   function sourcesReport() {
     const all = Object.values(custDb().list), orders = store.getOrders().list;
+    ensureReviewSource();
     return (store.getCatalog().settings.sources || []).map((src) => {
       const ids = new Set(all.filter((c) => c.source === src.slug).map((c) => c.id));
       const mine = orders.filter((o) => o.tgUser && ids.has(String(o.tgUser.id)) && o.status !== "cancel" && o.status !== "pay");
-      return Object.assign({}, src, { link: botLink("s_" + src.slug), links: linksFor(botLink, "s_" + src.slug), customers: ids.size, orders: mine.length, revenue: mine.reduce((sum, o) => sum + (o.toPay ?? o.totals.total), 0) });
+      const std = STD_SOURCES.find((x) => x.slug === src.slug);
+      return Object.assign({}, src, std ? { std: true, hint: std.hint } : {}, { link: botLink("s_" + src.slug), links: linksFor(botLink, "s_" + src.slug), customers: ids.size, orders: mine.length, revenue: mine.reduce((sum, o) => sum + (o.toPay ?? o.totals.total), 0) });
     });
   }
   on("GET", "/api/admin/sources", () => {
     const all = Object.values(custDb().list);
-    const other = { friend: "По ссылке друга", hint: "Через «Намекнуть»", gift: "Через цифровую открытку" };
-    return { sources: sourcesReport(), auto: Object.entries(other).map(([k, t]) => ({ slug: k, title: t, customers: all.filter((c) => c.source === k).length })), linkBase: botLink("") || Object.values(linksFor(botLink, ""))[0] || "" };
+    return { sources: sourcesReport(), auto: Object.entries(AUTO_SOURCES).map(([k, t]) => ({ slug: k, title: t, customers: all.filter((c) => c.source === k).length })), linkBase: botLink("") || Object.values(linksFor(botLink, ""))[0] || "" };
   }, { admin: true });
   on("PUT", "/api/admin/sources", ({ body }) => {
     const seen = new Set();
     const list = (Array.isArray(body.sources) ? body.sources : []).slice(0, 50).map((x) => ({ title: String(x.title || "").trim().slice(0, 60), slug: String(x.slug || "").trim() }))
       .filter((x) => x.title && /^[a-z0-9]{1,20}$/.test(x.slug) && !["friend", "hint", "gift"].includes(x.slug) && !seen.has(x.slug) && seen.add(x.slug));
+    const prev = store.getCatalog().settings.sources || [];
+    // the standard places can't be deleted
+    for (const x of prev) if (STD_SLUGS.has(x.slug) && !list.some((y) => y.slug === x.slug)) list.push(x);
     store.getCatalog().settings.sources = list; store.setCatalog(store.getCatalog());
     return { sources: sourcesReport() };
   }, { admin: true });
@@ -938,7 +970,7 @@ function createApp(opts = {}) {
     store.setCatalog(store.getCatalog());
     return staffView();
   }, { owner: true });
-  on("GET", "/api/admin/stats", () => report(store.getStats(), store.getCatalog()), { admin: true });
+  on("GET", "/api/admin/stats", () => Object.assign(report(store.getStats(), store.getCatalog()), { sources: sourceStats() }), { admin: true });
   on("POST", "/api/admin/import", async () => {
     const c = store.getCatalog();
     const products = await (opts.fetchStore || fetchStore)(c.settings.tildaParts || {});
