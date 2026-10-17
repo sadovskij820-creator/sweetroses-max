@@ -105,7 +105,7 @@ test("links, QR and the review card exist for both messengers; profile links fol
   assert.match(p.data.refLink, /^https:\/\/max\.ru\/gagulya_max_bot\?start=ref_/);
   assert.equal(p.data.botStarted, false, "MAX: «save the shop in chats» is offered");
   const q = await req(url + "/api/profile", "GET", null, tgUser(501), "telegram");
-  assert.match(q.data.refLink, /^https:\/\/t\.me\/gagulya_tg_bot\?startapp=ref_/);
+  assert.match(q.data.refLink, /^https:\/\/t\.me\/gagulya_tg_bot\?start=ref_/);
   const rv = await req(url + "/api/admin/reviews", "GET", null, tgUser(100), "telegram");
   assert.equal(rv.data.links.telegram, "https://t.me/gagulya_tg_bot?start=rv_1-s_otzyv");
   assert.equal(rv.data.links.max, "https://max.ru/gagulya_max_bot?start=rv_1-s_otzyv");

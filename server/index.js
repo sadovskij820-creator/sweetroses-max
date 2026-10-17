@@ -120,15 +120,16 @@ function createApp(opts = {}) {
   };
   const findGift = (gid) => store.getOrders().list.find((o) => o.gift && o.gift.id === gid && o.status !== "cancel") || null;
   /**
-   * Shareable link. In MAX it opens the bot CHAT (?start=) — so the shop stays in the person's chat list;
-   * the bot then answers with an «Открыть» button that launches the app with the same parameters.
-   * (?startapp= would open the app directly, but the chat would not appear.)
+   * Shareable link: opens the bot CHAT (?start=) in both messengers — so the shop stays in the person's chat list
+   * (bonus and order messages reach him); the bot answers with an «Открыть» button that launches the app with
+   * the same parameters. (Telegram ?startapp= opens an empty chat when the bot has no «main mini app» in BotFather —
+   * Gagulya, 16.10 — and MAX ?startapp= would not add the chat.)
    */
   const username = (pf) => { const b = botFor(pf); return (b && b.getUsername && b.getUsername()) || ""; };
   function botLink(param, pf = messenger) {
     const u = username(pf);
     if (!u) return "";
-    return pf === "max" ? `https://max.ru/${u}?start=${param}` : `https://t.me/${u}?startapp=${param}`;
+    return pf === "max" ? `https://max.ru/${u}?start=${param}` : `https://t.me/${u}?start=${param}`;
   }
   /** The same link for every connected messenger: { telegram: …, max: … } */
   const linksFor = (fn, param) => Object.fromEntries(platforms.map((pf) => [pf, fn(param, pf)]).filter(([, l]) => l));
