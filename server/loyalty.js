@@ -11,7 +11,7 @@ const TZ = "Asia/Irkutsk";
 function defaultLoyalty() {
   return {
     features: { customers: true, bonuses: true, levels: true, burn: true, dates: true, repeat: true, referral: true, broadcasts: true, payments: true,
-      hint: true, share: true, giftcard: true, sources: true, welcome: true, reviews: true },
+      hint: true, share: true, giftcard: true, sources: true, welcome: true, reviews: true, reviewAsk: true },
     welcomeBonus: 200,
     reviewBonus: 200,
     giftBonus: 200,

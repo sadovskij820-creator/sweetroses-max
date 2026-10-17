@@ -1052,7 +1052,7 @@
       } catch (e) { /* ignore */ }
     }
   }
-  const FEATURE_NAMES = { customers: "Клиентская база", bonuses: "Бонусы", levels: "Уровни (Бронза, Серебро, Золото)", burn: "Сгорание бонусов", dates: "Важные даты и напоминания", repeat: "Повтор заказа", referral: "Приведи друга", broadcasts: "Рассылки", payments: "Оплата в приложении", welcome: "Приветственный подарок новым", hint: "Кнопка «Намекнуть»", share: "Кнопка «Поделиться»", giftcard: "Цифровая открытка получателю", sources: "Ссылки и QR-коды для рекламы", reviews: "Отзывы (вкладыш с QR в букет)" };
+  const FEATURE_NAMES = { customers: "Клиентская база", bonuses: "Бонусы", levels: "Уровни (Бронза, Серебро, Золото)", burn: "Сгорание бонусов", dates: "Важные даты и напоминания", repeat: "Повтор заказа", referral: "Приведи друга", broadcasts: "Рассылки", payments: "Оплата в приложении", welcome: "Приветственный подарок новым", hint: "Кнопка «Намекнуть»", share: "Кнопка «Поделиться»", giftcard: "Цифровая открытка получателю", sources: "Ссылки и QR-коды для рекламы", reviews: "Отзывы (вкладыш с QR в букет)", reviewAsk: "Просить отзыв на следующий день после заказа" };
   function adminLoyalty(d) {
     const L = d.loyaltyResolved, P = d.paymentsResolved;
     return `<form data-form="loyalty">

@@ -147,7 +147,9 @@ function createApp(opts = {}) {
     if (!b || !id) return false;
     let extra = {};
     if (withButton && b.openButton) {
-      const btn = b.openButton(withButton === true ? "Открыть магазин" : withButton);
+      // withButton: true | "button text" | { text, payload } — the payload opens a page of the app (e.g. rv_1 → the review form)
+      const o = typeof withButton === "object" ? withButton : { text: withButton === true ? "Открыть магазин" : withButton };
+      const btn = b.openButton(o.text, o.payload || "");
       if (btn) extra = pf === "max" ? { buttons: btn } : { reply_markup: btn };
     }
     try { await b.sendMessage(id, text, extra); return true; } catch (e) { log.error("Send " + id + ": " + e.message); return false; }
@@ -682,7 +684,9 @@ function createApp(opts = {}) {
     }
     if (!["new", "work", "done", "cancel", "pay"].includes(body.status)) throw httpError(400, "Неизвестный статус");
     const prev = o.status;
-    o.status = body.status; store.saveOrders();
+    o.status = body.status;
+    if (prev !== o.status) o.doneAt = o.status === "done" ? new Date().toISOString() : undefined;
+    store.saveOrders();
     if (prev !== o.status && o.status === "work" && o.tgUser) {
       const pay = transferPayable(o) && !o.transferClaimedAt && o.transferMode === "after";
       sendUser(o.tgUser.id, pay ? `Заказ №${o.id} подтверждён ✅\n\n${transferText(o)}` : `Заказ №${o.id} подтверждён ✅ Уже готовим.`, pay ? "Оплатить" : false).catch(() => {});
@@ -1118,6 +1122,29 @@ function createApp(opts = {}) {
 
   const greeting = () => store.getCatalog().settings.botGreeting || "";
 
+  /** The text of the «how was the bouquet?» message for an order, or null if it is not the time or not needed. */
+  const REVIEW_ASK_AFTER_H = 18, REVIEW_ASK_GAP_DAYS = 14;
+  function reviewAskFor(o, now = new Date()) {
+    if (o.status !== "done" || !o.doneAt || o.reviewAskedAt || !o.tgUser) return null;
+    const age = now - new Date(o.doneAt);
+    if (age < REVIEW_ASK_AFTER_H * 3600e3 || age > 5 * 864e5) return null; // not before the next day; old orders — no
+    const uid = String(o.tgUser.id);
+    const c = custDb().list[uid];
+    if (c && c.sent && c.sent.reviewAsk && now - new Date(c.sent.reviewAsk) < REVIEW_ASK_GAP_DAYS * 864e5) return null; // not too often
+    const mine = RV().list.filter((r) => r.userId === uid);
+    if (mine.some((r) => r.at > o.createdAt)) return null; // already left a review for it
+    const L = loyal();
+    const lastBonus = mine.filter((x) => x.bonus).sort((a, b) => b.at.localeCompare(a.at))[0];
+    const bonus = LY.on(L, "bonuses") && L.reviewBonus > 0 && (!lastBonus || now - new Date(lastBonus.at) > REVIEW_BONUS_DAYS * 864e5) ? L.reviewBonus : 0;
+    const name = ((c && c.name) || o.tgUser.name || "").split(" ")[0];
+    const brand = store.getCatalog().settings.brand || "наш магазин";
+    return `${name ? name + ", здравствуйте!" : "Здравствуйте!"} 💐\n\n`
+      + (o.method === "delivery" ? `Ваш букет из ${brand} уже доставлен — надеемся, он подарил много радости 🌷` : `Надеемся, букет из ${brand} порадовал вас и того, для кого он был 🌷`)
+      + `\n\nПоделитесь, пожалуйста, как вам цветы, упаковка и наша работа. Это займёт минуту, а нам очень поможет стать лучше.`
+      + (bonus ? `\n\n🎁 За отзыв подарим <b>${bonus} бонусов</b> на следующий заказ.` : "")
+      + `\n\nНажмите кнопку ниже 👇`;
+  }
+
   /* ---------- background jobs: burning bonuses, important dates, unpaid orders ---------- */
   async function runJobs(now = new Date()) {
     const L = loyal(), db = custDb();
@@ -1154,6 +1181,17 @@ function createApp(opts = {}) {
         const c = o.tgUser && db.list[String(o.tgUser.id)];
         if (c && o.bonusUsed && !o.bonusRefunded) { LY.addBonus(c, o.bonusUsed, "refund", { now, days: L.burnDays, orderId: o.id, note: `Возврат за неоплаченный заказ №${o.id}` }); o.bonusRefunded = true; changed = true; }
         if (o.tgUser) await sendUser(o.tgUser.id, `Заказ №${o.id} отменён: оплата не поступила за час. Если подарок ещё нужен — оформите заказ заново.`, true);
+      }
+    }
+    // «Как вам букет?» — the day after the order is marked «Выполнен», 11:00–21:00
+    if (LY.on(L, "reviews") && LY.on(L, "reviewAsk") && hour >= 11 && hour < 21) {
+      for (const o of store.getOrders().list) {
+        const ask = reviewAskFor(o, now);
+        if (!ask) continue;
+        o.reviewAskedAt = now.toISOString(); ordersChanged = true;
+        const c = db.list[String(o.tgUser.id)];
+        if (c) { c.sent = c.sent || {}; c.sent.reviewAsk = now.toISOString(); changed = true; }
+        await sendUser(o.tgUser.id, ask, { text: "⭐ Оценить букет", payload: "rv_1" });
       }
     }
     if (ordersChanged) store.saveOrders();
