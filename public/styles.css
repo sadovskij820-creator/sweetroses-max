@@ -486,3 +486,5 @@ textarea.input { min-height: 84px; resize: vertical; }
 .steps-pay .sp.on b{background:var(--accent);color:#fff}
 .steps-pay .sp.done b{background:#2BAA78;color:#fff}
 .receipt-box{box-shadow:inset 0 0 0 2px var(--accent)}
+.receipt-warn{margin-top:14px;padding:12px 14px;border-radius:14px;background:#FFF4D6;color:#5A4300;font-size:13.5px;line-height:1.4}
+[data-theme="dark"] .receipt-warn{background:#3A3016;color:#F5E2A8}

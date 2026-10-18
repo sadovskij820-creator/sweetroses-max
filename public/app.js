@@ -437,7 +437,7 @@
       ${e.consent ? `<div class="err">${e.consent}</div>` : ""}
       ${e.form ? `<div class="err" style="margin-top:10px">${esc(e.form)}</div>` : ""}
       <button class="btn block" style="margin-top:16px" data-action="submitOrder" ${c.sending ? "disabled" : ""}>${c.sending ? "Отправляем…" : payOnline() || transferNow() ? "Перейти к оплате" : "Отправить заявку"}</button>
-      <p class="muted" style="font-size:12.5px;text-align:center;margin:10px 0 0">${payOnline() ? "Оплата картой или по СБП. Заказ подтвердим сразу после оплаты." : transferNow() ? (SHOP().receipt ? "Оплата переводом на карту или по СБП — реквизиты на следующем шаге. После перевода прикрепите чек: заказ сразу уйдёт флористу." : "Оплата переводом на карту или по СБП — реквизиты на следующем шаге. Можно оплатить в любое время, даже ночью.") : transferOn() ? "Оплата переводом после подтверждения: менеджер пришлёт реквизиты в чат." : "Оплата после звонка менеджера. Заказ готовим после 100% предоплаты."}</p>
+      <p class="muted" style="font-size:12.5px;text-align:center;margin:10px 0 0">${payOnline() ? "Оплата картой или по СБП. Заказ подтвердим сразу после оплаты." : transferNow() ? (SHOP().receipt ? "Оплата переводом на карту или по СБП — реквизиты на следующем шаге. После перевода прикрепите чек." : "Оплата переводом на карту или по СБП — реквизиты на следующем шаге. Можно оплатить в любое время, даже ночью.") : transferOn() ? "Оплата переводом после подтверждения: менеджер пришлёт реквизиты в чат." : "Оплата после звонка менеджера. Заказ готовим после 100% предоплаты."}</p>
     </div>`;
   }
 
@@ -579,13 +579,25 @@
   /** Pay by transfer, then «Я оплатил(а)» → attach the receipt; only then the order reaches the florist (Gagulya, 18.10.2026). */
   function viewTransferReceipt(id, t, row) {
     if (t.receipt) return `<div class="page empty"><div class="success-mark"><svg viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg></div>
-      <h1 class="display">Чек получен</h1><p style="max-width:34ch;margin:12px auto 22px">Заказ №${esc(id)} передан флористу. Подтверждение придёт в чат.</p><a class="btn" href="#/">На главную</a></div>`;
+      <h1 class="display">Чек получен</h1><p style="max-width:34ch;margin:12px auto 22px">Спасибо! Проверим оплату заказа №${esc(id)} и пришлём подтверждение в чат.</p><a class="btn" href="#/">На главную</a></div>`;
+    // step 2 — its own page: attach the receipt
+    if (t.step2) return `<div class="page">
+      <h1 class="display" style="font-size:34px;margin-top:8px">Прикрепите чек</h1>
+      <p class="lead">Заказ №${esc(id)} · ${rub(t.amount)}</p>
+      <div class="info-card receipt-box" style="margin-top:16px;text-align:left">
+        <p><b>📎 Обязательно прикрепите чек об оплате</b></p>
+        <p class="muted" style="font-size:13.5px;margin-top:6px">Скриншот из приложения банка или фото чека. Без чека мы не начнём собирать букет.</p>
+        <label class="btn block" style="margin-top:14px;${t.uploading ? "opacity:.6;pointer-events:none" : ""}"><input type="file" accept="image/*" hidden data-receipt-upload="${esc(id)}">${t.uploading ? "Отправляем чек…" : "Прикрепить чек"}</label>
+        ${t.uploadError ? `<div class="err" style="margin-top:8px">${esc(t.uploadError)}</div>` : ""}
+      </div>
+      <button class="btn ghost block" style="margin-top:10px" data-action="receiptBack">← Назад к реквизитам</button>
+    </div>`;
     return `<div class="page">
       <h1 class="display" style="font-size:34px;margin-top:8px">Оплата</h1>
-      <p class="lead">Заказ №${esc(id)} · перевод на карту или по СБП</p>
+      <p class="lead">Заказ №${esc(id)} оформлен · перевод на карту или по СБП</p>
       <div class="steps-pay">
-        <div class="sp ${t.step2 ? "done" : "on"}"><b>1</b><span>Переведите сумму</span></div>
-        <div class="sp ${t.step2 ? "on" : ""}"><b>2</b><span>Прикрепите чек</span></div>
+        <div class="sp on"><b>1</b><span>Переведите сумму</span></div>
+        <div class="sp"><b>2</b><span>Прикрепите чек</span></div>
       </div>
       <div class="pay-card">
         <div class="pay-sum">${rub(t.amount)}</div>
@@ -594,15 +606,10 @@
         ${row("Банк", t.bank)}
         ${row("Получатель", t.holder)}
         ${t.note ? `<p class="muted" style="font-size:13px;margin:10px 0 0">${esc(t.note)}</p>` : ""}
-        ${t.step2 ? "" : `<button class="btn block" style="margin-top:16px" data-action="receiptStep">Я оплатил(а)</button>`}
+        <div class="receipt-warn">⚠️ <b>После перевода обязательно прикрепите чек</b> — скриншот из банка. Без чека мы не начнём собирать букет.</div>
+        <button class="btn block" style="margin-top:12px" data-action="receiptStep">Я оплатил(а) — прикрепить чек</button>
       </div>
-      ${t.step2 ? `<div class="info-card receipt-box" data-receipt-box style="margin-top:14px;text-align:left">
-        <p><b>📎 Последний шаг — прикрепите чек</b></p>
-        <p class="muted" style="font-size:13.5px;margin-top:6px">Скриншот из банка или фото чека. Без него заказ не уйдёт флористу.</p>
-        <label class="btn block" style="margin-top:12px;${t.uploading ? "opacity:.6;pointer-events:none" : ""}"><input type="file" accept="image/*" hidden data-receipt-upload="${esc(id)}">${t.uploading ? "Отправляем чек…" : "Прикрепить чек"}</label>
-        ${t.uploadError ? `<div class="err" style="margin-top:8px">${esc(t.uploadError)}</div>` : ""}
-      </div>` : ""}
-      <p class="muted" style="font-size:12.5px;margin-top:12px">Переведите точную сумму. Заказ передадим флористу сразу после чека. Без чека заявка отменится через час.</p>
+      <p class="muted" style="font-size:12.5px;margin-top:12px">Переведите точную сумму. Реквизиты всегда можно открыть снова: Профиль → Мои заказы → «Оплатить и прикрепить чек».</p>
     </div>`;
   }
 
@@ -809,7 +816,7 @@
   function payBadge(o) {
     if (o.payMethod !== "transfer") return "";
     if (o.paid) return `<div class="pay-badge ok">✅ Оплата получена (перевод)${o.receipt ? ` · <a href="${esc(o.receipt)}" data-ext>чек</a>` : ""}</div>`;
-    if (o.awaitReceipt) return `<div class="pay-badge wait">⏳ Ждём оплату и чек — флористу заявка ещё не приходила</div>`;
+    if (o.awaitReceipt) return `<div class="pay-badge wait">⏳ Ждём оплату и чек от клиента${o.receiptNudged ? " — больше 30 минут, позвоните" : ""}</div>`;
     if (o.receipt) return `<div class="pay-badge claim">💳 Клиент прикрепил чек — <a href="${esc(o.receipt)}" data-ext>открыть чек</a>. Проверьте поступление в банке</div>`;
     if (o.transferClaimedAt) return `<div class="pay-badge claim">💳 Клиент сообщил об оплате ${ddmm(o.transferClaimedAt)} в ${new Intl.DateTimeFormat("ru-RU", { timeZone: TZ, hour: "2-digit", minute: "2-digit" }).format(new Date(o.transferClaimedAt))} — проверьте в банке</div>`;
     return `<div class="pay-badge wait">💳 Перевод: ${o.transferMode === "after" ? "реквизиты уйдут клиенту после «В работе»" : "ждём оплату"}</div>`;
@@ -1287,7 +1294,8 @@ ${d.shop && d.shop.noLevels ? "" : `      <h2 class="h2" style="font-size:22px">
     if (act === "method") { initCheckout().method = ds.m; fixSlot(); render(); return; }
     if (act === "zone") { const c = initCheckout(); c.zoneId = ds.id; delete c.errors.zone; fixSlot(); haptic(); render(); return; }
     if (act === "recipient") { const c = initCheckout(); c.forOther = ds.v === "other"; delete c.errors.recipientName; delete c.errors.recipientPhone; haptic(); render(); return; }
-    if (act === "receiptStep") { if (state.transfer) { state.transfer.step2 = true; haptic(); render(); setTimeout(() => { const el = $app.querySelector("[data-receipt-box]"); el && el.scrollIntoView({ block: "center", behavior: "smooth" }); }, 50); } return; }
+    if (act === "receiptBack") { if (state.transfer) { state.transfer.step2 = false; render(); window.scrollTo(0, 0); } return; }
+    if (act === "receiptStep") { if (state.transfer) { state.transfer.step2 = true; haptic(); render(); window.scrollTo(0, 0); } return; }
     if (act === "openTransfer") { state.transfer = null; return; }
     if (act === "transferDone") {
       const t = state.transfer; if (!t) return;

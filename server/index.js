@@ -495,13 +495,13 @@ function createApp(opts = {}) {
     o.transferClaimedAt = o.transferClaimedAt || o.receiptAt;
     const wasWaiting = !!o.awaitReceipt; delete o.awaitReceipt;
     store.saveOrders();
-    const sent = wasWaiting ? await notifyOrder(o).catch(() => []) : await notify(`💳 <b>Заявка №${o.id}: клиент прикрепил ${first ? "" : "новый "}чек об оплате</b>\n${o.name}, ${o.phone}\nПроверьте поступление и нажмите «Оплата получена».`).catch(() => []);
+    const sent = await notify(`💳 <b>Заявка №${o.id}: клиент прикрепил ${first ? "" : "новый "}чек об оплате ${formatRub(o.toPay ?? o.totals.total)}</b>\n${escH(o.name)}, ${escH(o.phone)}\nПроверьте поступление в банке и нажмите «Оплата получена» (Управление → Заявки).`).catch(() => []);
     const url = absUrl(o.receipt);
     for (const r of sent || []) {
       const b = botFor(r.platform);
       if (url && b && b.sendPhotos) { try { await b.sendPhotos(r.id, [url], `Чек об оплате к заявке №${o.id}`); } catch (e) { log.error("Чек в чат " + r.id + ": " + e.message); } }
     }
-    if (wasWaiting) sendUser(user.id, `Спасибо! Чек получили — заявка №${o.id} передана флористу ${E()} Подтверждение придёт сюда.`).catch(() => {});
+    if (wasWaiting) sendUser(user.id, `Спасибо! Чек по заказу №${o.id} получили ${E()} Как только проверим оплату — пришлём подтверждение сюда.`).catch(() => {});
     return transferInfo(o);
   }, { raw: true });
   on("POST", "/api/promo", ({ body, user }) => {
@@ -556,9 +556,11 @@ function createApp(opts = {}) {
     const payNow = order.payMethod === "transfer" && order.transferMode !== "after";
     const S = store.getCatalog().settings;
     if (payNow && shop.receipt) {
-      // the order reaches the florist only after the receipt — POST /api/orders/:id/receipt
+      // Gagulya 18.10.2026: the florist sees the order at once (to call if the payment doesn't come),
+      // the customer pays and attaches the receipt — POST /api/orders/:id/receipt
       order.awaitReceipt = true; store.saveOrders();
-      if (user) sendUser(user.id, `Заявка №${order.id} создана ${E()}\nОплатите ${formatRub(order.toPay)} переводом и прикрепите чек в приложении — сразу после этого заказ уйдёт флористу.\nБез чека заявка отменится через час.`, "Оплатить").catch(() => {});
+      notifyOrder(order).catch(() => {});
+      if (user) sendUser(user.id, `Заказ №${order.id} оформлен ${E()}\nОплатите ${formatRub(order.toPay)} переводом и обязательно прикрепите чек в приложении — без чека мы не начнём собирать букет.`, "Оплатить").catch(() => {});
       return { id: order.id, giftLink, transfer: transferInfo(order) };
     }
     notifyOrder(order).catch(() => {});
@@ -1262,17 +1264,17 @@ function createApp(opts = {}) {
     }
     let ordersChanged = false;
     for (const o of store.getOrders().list) {
-      // transfer without a receipt: a reminder after 20 minutes, cancelled after an hour (the florist never saw it)
-      if (o.awaitReceipt && o.status === "new" && !o.paid) {
+      // transfer without a receipt: the customer is reminded after 15 minutes, the florist after 30 (to call).
+      // No automatic cancel — the shop decides (the customer may have paid and forgotten the receipt).
+      if (o.awaitReceipt && !o.paid && o.status !== "cancel") {
         const age = now - new Date(o.createdAt);
-        if (age > 60 * 60e3) {
-          o.status = "cancel"; o.cancelReason = "Нет чека об оплате за 60 минут"; delete o.awaitReceipt; ordersChanged = true;
-          const c = o.tgUser && db.list[String(o.tgUser.id)];
-          if (c && o.bonusUsed && !o.bonusRefunded) { LY.addBonus(c, o.bonusUsed, "refund", { now, days: L.burnDays, orderId: o.id, note: `Возврат за отменённый заказ №${o.id}` }); o.bonusRefunded = true; changed = true; }
-          if (o.tgUser) await sendUser(o.tgUser.id, `Заявка №${o.id} отменена: мы не получили чек об оплате. Если вы уже перевели деньги — напишите нам, разберёмся. Если букет ещё нужен — оформите заказ заново.`, true);
-        } else if (age > 20 * 60e3 && !o.receiptReminded) {
+        if (age > 15 * 60e3 && !o.receiptReminded) {
           o.receiptReminded = true; ordersChanged = true;
-          if (o.tgUser) await sendUser(o.tgUser.id, `Заявка №${o.id} ждёт оплаты. Оплатите ${formatRub(o.toPay ?? o.totals.total)} и прикрепите чек — без него флорист не начнёт собирать букет.`, "Оплатить");
+          if (o.tgUser) await sendUser(o.tgUser.id, `Заказ №${o.id}: прикрепите, пожалуйста, чек об оплате ${formatRub(o.toPay ?? o.totals.total)} — без него мы не начнём собирать букет. Ещё не оплатили? Реквизиты по кнопке ниже.`, "Оплатить и прикрепить чек");
+        }
+        if (age > 30 * 60e3 && !o.receiptNudged) {
+          o.receiptNudged = true; ordersChanged = true;
+          await notify(`⏰ <b>Заявка №${o.id}: 30 минут без чека</b> (${formatRub(o.toPay ?? o.totals.total)})\nПроверьте поступление в банке или позвоните клиенту: ${escH(o.name)}, <a href="tel:${escH(String(o.phone).replace(/[^\d+]/g, ""))}">${escH(o.phone)}</a>`).catch(() => {});
         }
         continue;
       }

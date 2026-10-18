@@ -71,50 +71,53 @@ test("wished time is free text; «another person» needs the recipient's name an
   assert.match(list.find((x) => x.id === self.data.id).summary, /Получатель: сам заказчик/);
 });
 
-test("pay by transfer: the florist gets the order only with the receipt", async (t) => {
+test("pay by transfer: the florist sees the order at once, the receipt comes as a separate message", async (t) => {
   const { app, sent, photos, url } = await start(); t.after(() => app.server.close());
   app.onBotStart({ id: 100, first_name: "Гагуля" }, "");
   const r = await req(url + "/api/orders", "POST", order(customer()), user(501));
   assert.equal(r.status, 200);
   assert.equal(r.data.transfer.receiptNeeded, true);
   await new Promise((x) => setTimeout(x, 40));
-  assert.ok(!sent.some((m) => m.chat === "100" && m.text.includes(`№${r.data.id}`)), "no order for the florist yet");
-  assert.ok(sent.some((m) => m.chat === "501" && /прикрепите чек/.test(m.text)));
-  // «Я оплатил» alone is not enough
+  const first = sent.find((m) => m.chat === "100" && m.text.includes(`№${r.data.id}`));
+  assert.ok(first, "the florist sees the order at once (to call if no payment)");
+  assert.match(first.text, /Ждём оплату переводом и чек/);
+  assert.ok(sent.some((m) => m.chat === "501" && /оформлен/.test(m.text) && /прикрепите чек/.test(m.text)));
   assert.equal((await req(url + `/api/orders/${r.data.id}/transfer`, "POST", {}, user(501))).status, 400);
-  // not a picture
-  const txt = await fetch(url + `/api/orders/${r.data.id}/receipt`, { method: "POST", headers: { "X-Init-Data": user(501) }, body: "hello" });
-  assert.equal(txt.status, 400);
-  // someone else's order
+  assert.equal((await fetch(url + `/api/orders/${r.data.id}/receipt`, { method: "POST", headers: { "X-Init-Data": user(501) }, body: "hello" })).status, 400);
   assert.equal((await fetch(url + `/api/orders/${r.data.id}/receipt`, { method: "POST", headers: { "X-Init-Data": user(777) }, body: PNG })).status, 404);
   const up = await fetch(url + `/api/orders/${r.data.id}/receipt`, { method: "POST", headers: { "X-Init-Data": user(501) }, body: PNG });
   assert.equal(up.status, 200);
   const info = await up.json();
   assert.equal(info.receipt, true); assert.equal(info.receiptNeeded, false);
   await new Promise((x) => setTimeout(x, 40));
-  const m = sent.find((x) => x.chat === "100" && x.text.includes(`№${r.data.id}`));
-  assert.ok(m, "the order reached the florist"); assert.match(m.text, /прикрепил чек/);
+  assert.ok(sent.some((x) => x.chat === "100" && /прикрепил чек/.test(x.text) && x.text.includes(`№${r.data.id}`)));
   assert.ok(photos.some((p) => p.chat === "100" && /Чек об оплате/.test(p.cap) && /^https:\/\/shop\.example\/u\//.test(p.urls[0])));
-  assert.ok(sent.some((x) => x.chat === "501" && /Чек получили/.test(x.text)));
+  assert.ok(sent.some((x) => x.chat === "501" && /Чек по заказу/.test(x.text)));
   const o = find(app, r.data.id);
   assert.ok(o.receipt && !o.awaitReceipt && o.transferClaimedAt);
-  // the manager confirms the money
   await req(url + `/api/admin/orders/${r.data.id}`, "PATCH", { paid: true }, user(100));
   assert.equal(find(app, r.data.id).paid, true);
 });
 
-test("no receipt: a reminder after 20 minutes, cancelled after an hour; no bonuses for purchases", async (t) => {
+test("no receipt: the customer is reminded after 15 minutes, the florist after 30; nothing is cancelled", async (t) => {
   const { app, sent, url } = await start(); t.after(() => app.server.close());
+  app.onBotStart({ id: 100, first_name: "Гагуля" }, "");
   const r = await req(url + "/api/orders", "POST", order(customer()), user(601));
   const o = find(app, r.data.id);
-  o.createdAt = new Date(Date.now() - 25 * 60e3).toISOString();
+  o.createdAt = new Date(Date.now() - 10 * 60e3).toISOString();
   await app.runJobs(new Date());
-  assert.ok(sent.some((m) => m.chat === "601" && /ждёт оплаты/.test(m.text)));
-  assert.equal(o.status, "new");
-  o.createdAt = new Date(Date.now() - 65 * 60e3).toISOString();
+  assert.ok(!sent.some((m) => m.chat === "601" && /прикрепите, пожалуйста, чек/.test(m.text)));
+  o.createdAt = new Date(Date.now() - 18 * 60e3).toISOString();
   await app.runJobs(new Date());
-  assert.equal(o.status, "cancel");
-  assert.ok(sent.some((m) => m.chat === "601" && /не получили чек/.test(m.text)));
+  assert.equal(sent.filter((m) => m.chat === "601" && /прикрепите, пожалуйста, чек/.test(m.text)).length, 1);
+  assert.ok(!sent.some((m) => m.chat === "100" && /30 минут без чека/.test(m.text)));
+  o.createdAt = new Date(Date.now() - 35 * 60e3).toISOString();
+  await app.runJobs(new Date()); await app.runJobs(new Date());
+  assert.equal(sent.filter((m) => m.chat === "100" && /30 минут без чека/.test(m.text)).length, 1, "once");
+  assert.equal(sent.filter((m) => m.chat === "601" && /прикрепите, пожалуйста, чек/.test(m.text)).length, 1, "once");
+  o.createdAt = new Date(Date.now() - 5 * 3600e3).toISOString();
+  await app.runJobs(new Date());
+  assert.equal(o.status, "new", "never cancelled automatically");
   // a finished order gives no bonus (no levels)
   const r2 = await req(url + "/api/orders", "POST", order(customer({ time: "21:00" })), user(602));
   await fetch(url + `/api/orders/${r2.data.id}/receipt`, { method: "POST", headers: { "X-Init-Data": user(602) }, body: PNG });
