@@ -744,7 +744,7 @@ function createApp(opts = {}) {
   }, { admin: true });
 
   const PRODUCT_FIELDS = { title: "s", short: "s", intro: "s", details: "a", images: "a", cats: "a", price: "n", oldPrice: "n?", chocolateChoices: "n", hidden: "b" };
-  const OTHER_FIELDS = { categories: { title: "s", hidden: "b", image: "img" }, addons: { title: "s", price: "n", hidden: "b" } };
+  const OTHER_FIELDS = { categories: { title: "s", hidden: "b", image: "img" }, addons: { title: "s", price: "n", hidden: "b", image: "img", text: "s" } };
   function pick(body, spec) {
     const out = {};
     for (const [k, t] of Object.entries(spec)) {
@@ -896,10 +896,9 @@ function createApp(opts = {}) {
   }, { admin: true });
   on("POST", "/api/admin/item/:coll", ({ params, body }) => {
     const list = findColl(params.coll);
-    if (params.coll === "addons") throw httpError(400, "Допы добавляются через настройки");
     const fields = pick(body, params.coll === "products" ? PRODUCT_FIELDS : OTHER_FIELDS[params.coll]);
     if (!fields.title) throw httpError(400, "Укажите название");
-    const id = params.coll === "products" ? "m" + Date.now().toString(36) : "c" + Date.now().toString(36);
+    const id = (params.coll === "products" ? "m" : params.coll === "addons" ? "a" : "c") + Date.now().toString(36);
     const base = params.coll === "products" ? { short: "", intro: "", details: [], images: [], cats: [], price: 0, oldPrice: null, chocolateChoices: 0 } : {};
     const item = Object.assign(base, fields, { id, hidden: !!fields.hidden, sort: Math.max(0, ...list.map((x) => x.sort || 0)) + 1 });
     list.push(item);
@@ -908,7 +907,7 @@ function createApp(opts = {}) {
   }, { admin: true });
   on("DELETE", "/api/admin/item/:coll/:id", ({ params }) => {
     const list = findColl(params.coll);
-    if (params.coll !== "products") throw httpError(400, "Категории и допы можно только скрыть");
+    if (params.coll === "categories") throw httpError(400, "Категорию можно только скрыть");
     const i = list.findIndex((x) => String(x.id) === params.id);
     if (i < 0) throw httpError(404, "Не найдено");
     list.splice(i, 1);

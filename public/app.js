@@ -322,6 +322,38 @@
     </div>`;
   }
 
+  function addonPic(a) { return a.image ? `<div class="addon-pic">${imgTag(a.image, 160, a.title)}</div>` : ""; }
+  // full-screen layer over the app: the photo viewer and the «anything else?» sheet
+  function overlay(id, html, cls) {
+    closeOverlay();
+    const el = document.createElement("div");
+    el.id = id; el.className = "overlay " + (cls || ""); el.innerHTML = html;
+    document.body.appendChild(el); document.body.classList.add("no-scroll");
+    return el;
+  }
+  function closeOverlay() { document.querySelectorAll(".overlay").forEach((x) => x.remove()); document.body.classList.remove("no-scroll"); }
+  function showAddonSheet() {
+    const addons = state.catalog.addons.filter((a) => !a.hidden);
+    const keep = document.getElementById("addonSheet");
+    const body = `<div class="sheet-bg" data-action="closeOverlay"></div><div class="sheet">
+      <div class="sheet-grip"></div>
+      <h2 class="h2" style="font-size:24px;margin:4px 0 2px">Ничего не забыли?</h2>
+      <p class="muted" style="margin:0 0 6px;font-size:14px">Можно добавить к букету:</p>
+      ${addons.map((a) => { const q = state.cart.addons[a.id] || 0; return `<div class="addon">${addonPic(a)}<div style="flex:1"><div class="t">${esc(a.title)}</div>${a.text ? `<div class="p">${esc(a.text)}</div>` : ""}<div class="p">${rub(a.price)}</div></div>
+        ${q ? `<div class="stepper" style="height:38px;background:var(--surface)"><button style="height:38px;width:38px" data-action="addonQty" data-id="${esc(a.id)}" data-d="-1" aria-label="Меньше">−</button><span>${q}</span><button style="height:38px;width:38px" data-action="addonQty" data-id="${esc(a.id)}" data-d="1" aria-label="Больше">+</button></div>` : `<button class="btn soft small" data-action="addonQty" data-id="${esc(a.id)}" data-d="1">Добавить</button>`}</div>`; }).join("")}
+      <button class="btn block" style="margin-top:14px" data-action="sheetGo">${Object.keys(state.cart.addons).length ? "Оформить заказ" : "Нет, спасибо — оформить"}</button>
+    </div>`;
+    if (keep) keep.innerHTML = body; else overlay("addonSheet", body, "sheet-wrap");
+  }
+  function showViewer(urls, start) {
+    const el = overlay("viewer", `<div class="viewer-strip">${urls.map((u) => `<div class="viewer-slide"><img src="${esc(img(u, 1600))}" data-orig="${esc(u)}" alt="" onerror="if(this.src!==this.dataset.orig){this.src=this.dataset.orig}"></div>`).join("")}</div>
+      <button class="viewer-x" data-action="closeOverlay" aria-label="Закрыть">×</button>${urls.length > 1 ? `<div class="viewer-n"><span>${start + 1}</span> / ${urls.length}</div>` : ""}`, "viewer");
+    const strip = el.querySelector(".viewer-strip");
+    strip.scrollLeft = start * strip.clientWidth;
+    strip.addEventListener("scroll", () => { const n = el.querySelector(".viewer-n span"); if (n) n.textContent = Math.round(strip.scrollLeft / strip.clientWidth) + 1; }, { passive: true });
+    strip.addEventListener("click", (e) => { if (e.target === strip || e.target.classList.contains("viewer-slide")) closeOverlay(); });
+  }
+
   function viewCart() {
     if (!state.cart.lines.length) {
       return `<div class="page empty">${payWaitBanner()}<h1 class="display">Корзина пуста</h1><p>${esc(state.catalog.settings.emptyCartText || "Загляните в каталог: там боксы, букеты и наборы с клубникой в шоколаде.")}</p><a class="btn" href="#/catalog/all">Открыть каталог</a></div>`;
@@ -344,7 +376,7 @@
       <h2 class="h2" style="font-size:26px">Добавить к заказу</h2>
       ${addons.map((a) => {
         const q = state.cart.addons[a.id] || 0;
-        return `<div class="addon"><div><div class="t">${esc(a.title)}</div><div class="p">${rub(a.price)}</div></div>
+        return `<div class="addon">${addonPic(a)}<div style="flex:1"><div class="t">${esc(a.title)}</div>${a.text ? `<div class="p">${esc(a.text)}</div>` : ""}<div class="p">${rub(a.price)}</div></div>
           ${q ? `<div class="stepper" style="height:38px;background:var(--surface)"><button style="height:38px;width:38px" data-action="addonQty" data-id="${esc(a.id)}" data-d="-1" aria-label="Меньше">−</button><span>${q}</span><button style="height:38px;width:38px" data-action="addonQty" data-id="${esc(a.id)}" data-d="1" aria-label="Больше">+</button></div>`
           : `<button class="btn soft small" data-action="addonQty" data-id="${esc(a.id)}" data-d="1">Добавить</button>`}</div>
           ${a.withText && q ? `<label class="field"><span>Текст для открытки</span><textarea class="input" maxlength="300" data-input="cardText" placeholder="Например: С днём рождения, мама!">${esc(state.cart.cardText)}</textarea></label>` : ""}`;
@@ -361,7 +393,7 @@
         <div class="r"><span>Доставка</span><span class="muted">${zones().length ? "по району — при оформлении" : "рассчитает менеджер"}</span></div>
         <div class="r total"><span>Итого</span><span class="price">${rub(t.total)}</span></div>
       </div>
-      <a class="btn block" style="margin-top:16px" href="#/checkout">Оформить заказ</a>
+      <button class="btn block" style="margin-top:16px" data-action="toCheckout">Оформить заказ</button>
     </div>`;
   }
 
@@ -960,9 +992,20 @@
   }
   function adminExtras(d) {
     return `<h2 class="h2" style="font-size:24px;margin-top:10px">Допы в корзине</h2>
-      ${d.addons.map((a) => `<div class="admin-row ${a.hidden ? "is-hidden" : ""}" style="grid-template-columns:1fr 96px auto">
-        <div class="t">${esc(a.title)}</div><input class="input" style="min-height:40px" type="number" min="0" value="${a.price}" data-addon-price="${esc(a.id)}" aria-label="Цена">
-        <div class="mini"><button data-action="toggleHidden" data-coll="addons" data-id="${esc(a.id)}">${a.hidden ? "◌" : "●"}</button></div></div>`).join("")}
+      <p class="muted" style="font-size:13px;margin:-4px 0 6px">Их предлагаем в корзине и ещё раз напоминаем перед оформлением. Нажмите на кружок, чтобы поставить фото.</p>
+      ${d.addons.map((a) => `<div class="addon-admin ${a.hidden ? "is-hidden" : ""}">
+        <label class="cat-ava" title="Сменить фото">${a.image ? imgTag(a.image, 160, a.title) : `<div class="ph-empty"></div>`}<b>📷</b><input type="file" accept="image/*" hidden data-addon-photo="${esc(a.id)}"></label>
+        <div class="addon-mid">
+          <input class="input" value="${esc(a.title)}" data-addon-title="${esc(a.id)}" maxlength="60" aria-label="Название">
+          <input class="input" value="${esc(a.text || "")}" data-addon-text="${esc(a.id)}" maxlength="80" placeholder="Описание (необязательно)" aria-label="Описание">
+          <label class="addon-price"><input class="input" type="number" min="0" value="${a.price}" data-addon-price="${esc(a.id)}" aria-label="Цена"><span>₽</span></label>
+        </div>
+        <div class="mini" style="flex-direction:column"><button data-action="toggleHidden" data-coll="addons" data-id="${esc(a.id)}" title="${a.hidden ? "Показать" : "Скрыть"}">${a.hidden ? "◌" : "●"}</button><button data-action="addonDel" data-id="${esc(a.id)}" title="Удалить">×</button></div></div>`).join("")}
+      <form data-form="addonNew" class="addon-new">
+        <input class="input" name="title" placeholder="Новый доп, например «Клубника в шоколаде»" maxlength="60" required>
+        <input class="input" name="price" type="number" min="0" placeholder="Цена" required>
+        <button class="btn" type="submit">Добавить</button>
+      </form>
       <h2 class="h2" style="font-size:24px">Промокоды</h2>
       <form data-form="promos">
       ${d.promos.map((p, i) => `<div class="admin-row" style="grid-template-columns:1fr 70px auto">
@@ -1281,6 +1324,8 @@ ${d.shop && d.shop.noLevels ? "" : `      <h2 class="h2" style="font-size:22px">
     bindGallery();
     if ($app.querySelector("img[data-qr-text]")) fillQr();
   }
+  window.addEventListener("hashchange", () => closeOverlay());
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeOverlay(); });
   function bindGallery() {
     const g = $app.querySelector("[data-gallery]");
     if (!g) return;
@@ -1295,6 +1340,8 @@ ${d.shop && d.shop.noLevels ? "" : `      <h2 class="h2" style="font-size:22px">
   document.addEventListener("click", async (ev) => {
     const ext = ev.target.closest("a[data-ext]");
     if (ext && host) { ev.preventDefault(); const u = ext.href; if (tg) { /^https:\/\/t\.me\//.test(u) ? tg.openTelegramLink(u) : tg.openLink(u); } else { try { mx.openLink(u); } catch (e) { window.open(u, "_blank"); } } return; }
+    const gimg = ev.target.closest("[data-gallery] img");
+    if (gimg) { const g = gimg.closest("[data-gallery]"); const all = [...g.querySelectorAll("img")]; showViewer(all.map((x) => x.dataset.orig), all.indexOf(gimg)); return; }
     const el = ev.target.closest("[data-action]");
     if (!el) return;
     const act = el.dataset.action;
@@ -1329,8 +1376,17 @@ ${d.shop && d.shop.noLevels ? "" : `      <h2 class="h2" style="font-size:22px">
     if (act === "addonQty") {
       const q = (state.cart.addons[ds.id] || 0) + +ds.d;
       if (q <= 0) delete state.cart.addons[ds.id]; else state.cart.addons[ds.id] = Math.min(20, q);
-      saveCart(); render(); return;
+      saveCart(); render(); if (document.getElementById("addonSheet")) showAddonSheet(); return;
     }
+    // «Ничего не забыли?» — once per cart, if no extras were added
+    if (act === "toCheckout") {
+      const visible = state.catalog.addons.filter((a) => !a.hidden);
+      const none = !Object.keys(state.cart.addons || {}).length;
+      if (visible.length && none && !state.addonAsked) { state.addonAsked = true; showAddonSheet(); haptic(); return; }
+      location.hash = "#/checkout"; return;
+    }
+    if (act === "sheetGo") { closeOverlay(); location.hash = "#/checkout"; return; }
+    if (act === "closeOverlay") { closeOverlay(); return; }
     if (act === "applyPromo") {
       const code = state.promo.code.trim();
       if (!code) return;
@@ -1497,6 +1553,12 @@ ${d.shop && d.shop.noLevels ? "" : `      <h2 class="h2" style="font-size:22px">
       return;
     }
     if (act === "catPhotoReset") { if (await adminCall(`/api/admin/item/categories/${encodeURIComponent(ds.id)}`, "PUT", { image: "" }, "cat")) toast("Теперь фото берём с первого товара"); return; }
+    if (act === "addonDel") {
+      const go = () => adminCall(`/api/admin/item/addons/${encodeURIComponent(ds.id)}`, "DELETE", null, "extras");
+      const q = "Удалить доп? Можно вместо этого скрыть его кнопкой ●.";
+      if (tg && tg.showConfirm) tg.showConfirm(q, (yes) => yes && go()); else if (window.confirm(q)) go();
+      return;
+    }
     if (act === "addCategory") { await adminCall(`/api/admin/item/categories`, "POST", { title: "Новая категория" }, "categories"); return; }
     if (act === "deleteProduct") {
       const go = () => adminCall(`/api/admin/item/products/${ds.id}`, "DELETE", null, "products").then(() => (location.hash = "#/admin/products"));
@@ -1568,6 +1630,16 @@ ${d.shop && d.shop.noLevels ? "" : `      <h2 class="h2" style="font-size:22px">
       try { const url = await uploadReviewPhoto(file); const f = rvForm(); if (f.photos.length < 3) f.photos.push(url); render(); } catch (e) { toast(e.message); }
       return;
     }
+    if (t.dataset.addonPhoto) {
+      const file = t.files && t.files[0]; t.value = "";
+      if (!file) return;
+      toast("Загружаем фото…");
+      try {
+        const url = await uploadPhoto(file);
+        if (await adminCall(`/api/admin/item/addons/${encodeURIComponent(t.dataset.addonPhoto)}`, "PUT", { image: url }, "extras")) toast("Фото допа обновлено");
+      } catch (e) { toast(e.message); }
+      return;
+    }
     if (t.dataset.catPhoto) {
       const file = t.files && t.files[0]; t.value = "";
       if (!file) return;
@@ -1599,6 +1671,8 @@ ${d.shop && d.shop.noLevels ? "" : `      <h2 class="h2" style="font-size:22px">
       return;
     }
     if (t.dataset.rename) await adminCall(`/api/admin/item/categories/${t.dataset.rename}`, "PUT", { title: t.value.trim() }, "categories");
+    if (t.dataset.addonTitle) { if (t.value.trim()) await adminCall(`/api/admin/item/addons/${t.dataset.addonTitle}`, "PUT", { title: t.value.trim() }, "extras"); return; }
+    if (t.dataset.addonText !== undefined && t.dataset.addonText) { await adminCall(`/api/admin/item/addons/${t.dataset.addonText}`, "PUT", { text: t.value.trim() }, "extras"); return; }
     if (t.dataset.addonPrice) await adminCall(`/api/admin/item/addons/${t.dataset.addonPrice}`, "PUT", { price: Math.max(0, parseInt(t.value, 10) || 0) }, "extras");
   });
 
@@ -1617,6 +1691,11 @@ ${d.shop && d.shop.noLevels ? "" : `      <h2 class="h2" style="font-size:22px">
       const id = f.dataset.id;
       const r = await adminCall(id ? `/api/admin/item/products/${id}` : `/api/admin/item/products`, id ? "PUT" : "POST", body, null);
       if (r) { toast(id ? "Сохранено" : "Товар создан"); location.hash = state.admin.fromCat ? "#/admin/cat/" + state.admin.fromCat : "#/admin/products"; }
+    }
+    if (f.dataset.form === "addonNew") {
+      const title = String(fd.get("title") || "").trim(); if (!title) return;
+      if (await adminCall(`/api/admin/item/addons`, "POST", { title, price: parseInt(fd.get("price"), 10) || 0 }, "extras")) toast("Доп добавлен — нажмите на кружок, чтобы поставить фото");
+      return;
     }
     if (f.dataset.form === "settings") {
       const body = {
@@ -1738,7 +1817,7 @@ ${d.shop && d.shop.noLevels ? "" : `      <h2 class="h2" style="font-size:22px">
       };
       const r = window.__MOCK ? { id: 1024 } : await api("/api/orders", { method: "POST", body });
       store("sr_contact", { name: c.name, phone: c.phone, address: c.address, zoneId: c.zoneId || "" });
-      state.cart = { lines: [], addons: {}, cardText: "" }; saveCart();
+      state.cart = { lines: [], addons: {}, cardText: "" }; state.addonAsked = false; saveCart();
       state.promo = { code: "", percent: 0, message: "" };
       state.checkout = null;
       haptic("ok");
@@ -1768,7 +1847,7 @@ ${d.shop && d.shop.noLevels ? "" : `      <h2 class="h2" style="font-size:22px">
       const mq = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)");
       const applyTheme = () => { document.documentElement.dataset.theme = mq && mq.matches ? "dark" : "light"; };
       applyTheme(); mq && mq.addEventListener && mq.addEventListener("change", applyTheme);
-      try { mx.BackButton.onClick(() => history.length > 1 ? history.back() : (location.hash = "#/")); } catch (e) {}
+      try { mx.BackButton.onClick(() => document.querySelector(".overlay") ? closeOverlay() : history.length > 1 ? history.back() : (location.hash = "#/")); } catch (e) {}
     }
     if (tg) {
       tg.ready(); tg.expand();
@@ -1779,7 +1858,7 @@ ${d.shop && d.shop.noLevels ? "" : `      <h2 class="h2" style="font-size:22px">
         try { tg.setHeaderColor(bg); tg.setBackgroundColor(bg); tg.setBottomBarColor && tg.setBottomBarColor(bg); } catch (e) {}
       };
       applyTheme(); tg.onEvent("themeChanged", applyTheme);
-      tg.BackButton.onClick(() => history.length > 1 ? history.back() : (location.hash = "#/"));
+      tg.BackButton.onClick(() => document.querySelector(".overlay") ? closeOverlay() : history.length > 1 ? history.back() : (location.hash = "#/"));
     }
     try {
       state.catalog = window.__CATALOG || (await api("/api/catalog"));
