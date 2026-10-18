@@ -72,7 +72,25 @@ function createApp(opts = {}) {
   const orderTimes = new Map(); // rate limit per user/ip
 
   /* ---------- loyalty, customers, payments ---------- */
-  const loyal = () => LY.loyaltyOf(store.getCatalog().settings);
+  /*
+   * Fixed options of this shop (seed/<SEED>.shop.json, in the flat build catalog.shop.json; read on every start).
+   * Gagulya 18.10.2026: noLevels (no Бронза/Серебро/Золото and no bonuses for purchases, not even in the settings),
+   * noReviewBonus, timeText (the customer writes the wished time), recipient (customer + recipient), receipt
+   * (pay by transfer → the order reaches the managers only with a photo of the receipt), commentHint.
+   */
+  const shop = (() => {
+    if (opts.shop) return opts.shop;
+    const f = opts.shopFile !== undefined ? opts.shopFile : opts.seedFile ? null : config.seedFile.replace(/\.seed\.json$/, ".shop.json");
+    try { return f && fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, "utf8")) : {}; } catch (e) { (opts.log || console).error("shop.json: " + e.message); return {}; }
+  })();
+  const loyal = () => {
+    const L = LY.loyaltyOf(store.getCatalog().settings);
+    if (shop.noLevels) { L.features = Object.assign({}, L.features, { levels: false }); L.levels = [{ name: "", from: 0, percent: 0 }]; }
+    if (shop.noReviewBonus) L.reviewBonus = 0;
+    return L;
+  };
+  const shopPublic = () => ({ noLevels: !!shop.noLevels, noReviewBonus: !!shop.noReviewBonus, timeText: !!shop.timeText, recipient: !!shop.recipient, receipt: !!shop.receipt, commentHint: shop.commentHint || "" });
+  const catalogForOrder = () => { const c = store.getCatalog(); return Object.assign({}, c, { settings: Object.assign({}, c.settings, { timeText: !!shop.timeText, recipient: !!shop.recipient }) }); };
   const paySettings = () => Object.assign({ enabled: false, provider: "demo" }, store.getCatalog().settings.payments || {});
   // ONLINE_PAYMENTS=off (Amvera → «Переменные») — the shop's tariff has no online payment (e.g. Бизнес, Gagulya):
   // no card payment, no «Демо»/«ЮKassa» in the admin; payment by transfer to the shop's card still works.
@@ -84,7 +102,8 @@ function createApp(opts = {}) {
   const transferPayable = (o) => o.payMethod === "transfer" && !o.paid && o.status !== "cancel" && o.status !== "done" && (o.transferMode !== "after" || o.status === "work");
   function transferInfo(o) {
     const t = transferSettings();
-    return { id: o.id, amount: o.toPay ?? o.totals.total, card: t.card, phone: t.phone, bank: t.bank, holder: t.holder, note: t.note, claimed: !!o.transferClaimedAt, paid: !!o.paid, payable: transferPayable(o) };
+    return { id: o.id, amount: o.toPay ?? o.totals.total, card: t.card, phone: t.phone, bank: t.bank, holder: t.holder, note: t.note, claimed: !!o.transferClaimedAt, paid: !!o.paid, payable: transferPayable(o),
+      receiptNeeded: !!o.awaitReceipt, receipt: !!o.receipt };
   }
   function transferText(o) {
     const t = transferSettings(), e = (x) => String(x).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
@@ -250,7 +269,7 @@ function createApp(opts = {}) {
     const L = loyal();
     delete settings.loyalty; delete settings.payments; delete settings.sources; delete settings.transfer;
     return {
-      platform: messenger, platforms,
+      platform: messenger, platforms, shop: shopPublic(),
       loyalty: { features: L.features, maxPayPercent: L.maxPayPercent, levels: L.levels, referral: L.referral, burnDays: L.burnDays, welcomeBonus: L.welcomeBonus, giftBonus: L.giftBonus },
       reviews: LY.on(L, "reviews") ? Object.assign(reviewsSummary(), { bonus: LY.on(L, "bonuses") ? L.reviewBonus : 0 }) : null,
       payments: { enabled: paymentsOn(), provider: paySettings().provider },
@@ -356,7 +375,7 @@ function createApp(opts = {}) {
       history: LY.on(L, "bonuses") ? c.history.slice(0, 20) : [],
       orders: myOrders(user.id).slice(-20).reverse().map((o) => ({
         id: o.id, createdAt: o.createdAt, status: o.status, paid: !!o.paid, total: o.totals.total, toPay: o.toPay ?? o.totals.total,
-        payMethod: o.payMethod || "", transferPayable: transferPayable(o), transferClaimed: !!o.transferClaimedAt,
+        payMethod: o.payMethod || "", transferPayable: transferPayable(o), transferClaimed: !!o.transferClaimedAt, awaitReceipt: !!o.awaitReceipt,
         bonusUsed: o.bonusUsed || 0, bonusAccrued: o.bonusAccrued || 0, date: o.date, time: o.time,
         lines: o.totals.lines.map((l) => ({ id: l.id, qty: l.qty, choc: l.choc || [], title: l.title })),
         giftLink: o.gift ? botLink("g_" + o.gift.id, user.platform) : "",
@@ -451,12 +470,40 @@ function createApp(opts = {}) {
     if (!o || o.payMethod !== "transfer") throw httpError(404, "Заказ не найден");
     if (o.paid) return transferInfo(o);
     if (!transferPayable(o)) throw httpError(400, o.status === "cancel" ? "Заказ отменён" : "Этот заказ пока не ждёт оплаты");
+    if (o.awaitReceipt) throw httpError(400, "Прикрепите чек об оплате — без него заказ не уйдёт флористу");
     if (!o.transferClaimedAt) {
       o.transferClaimedAt = new Date().toISOString(); store.saveOrders();
       notify(`💳 <b>Заявка №${o.id}: клиент сообщил об оплате ${formatRub(o.toPay ?? o.totals.total)}</b>\n${o.name}, ${o.phone}\nПроверьте поступление в банке и нажмите «Оплата получена» в приложении (Управление → Заявки).`).catch(() => {});
     }
     return transferInfo(o);
   });
+  /* the receipt of a transfer (photo or screenshot): only with it the order goes to the managers */
+  on("POST", "/api/orders/:id/receipt", async ({ user, params, body }) => {
+    needUser(user);
+    const o = myOrders(user.id).find((x) => String(x.id) === params.id);
+    if (!o || o.payMethod !== "transfer") throw httpError(404, "Заказ не найден");
+    if (o.status === "cancel") throw httpError(400, "Заказ отменён — оформите его заново");
+    if (o.paid) return transferInfo(o);
+    if (!Buffer.isBuffer(body) || !body.length) throw httpError(400, "Чек не получен — выберите фото или скриншот ещё раз");
+    const kind = imageKind(body);
+    if (!kind) throw httpError(400, "Нужен скриншот или фото чека (JPG, PNG)");
+    fs.mkdirSync(uploadsDir, { recursive: true });
+    const name = crypto.randomBytes(12).toString("hex") + "." + kind;
+    fs.writeFileSync(path.join(uploadsDir, name), body);
+    const first = !o.receipt;
+    o.receipt = "/u/" + name; o.receiptAt = new Date().toISOString();
+    o.transferClaimedAt = o.transferClaimedAt || o.receiptAt;
+    const wasWaiting = !!o.awaitReceipt; delete o.awaitReceipt;
+    store.saveOrders();
+    const sent = wasWaiting ? await notifyOrder(o).catch(() => []) : await notify(`💳 <b>Заявка №${o.id}: клиент прикрепил ${first ? "" : "новый "}чек об оплате</b>\n${o.name}, ${o.phone}\nПроверьте поступление и нажмите «Оплата получена».`).catch(() => []);
+    const url = absUrl(o.receipt);
+    for (const r of sent || []) {
+      const b = botFor(r.platform);
+      if (url && b && b.sendPhotos) { try { await b.sendPhotos(r.id, [url], `Чек об оплате к заявке №${o.id}`); } catch (e) { log.error("Чек в чат " + r.id + ": " + e.message); } }
+    }
+    if (wasWaiting) sendUser(user.id, `Спасибо! Чек получили — заявка №${o.id} передана флористу ${E()} Подтверждение придёт сюда.`).catch(() => {});
+    return transferInfo(o);
+  }, { raw: true });
   on("POST", "/api/promo", ({ body, user }) => {
     const p = findPromo(store.getCatalog(), body.code);
     if (!p) return { ok: false, message: "Такого промокода нет. Проверьте написание." };
@@ -468,7 +515,7 @@ function createApp(opts = {}) {
     const key = user ? "u" + user.id : "ip" + ip;
     const recent = (orderTimes.get(key) || []).filter((t) => Date.now() - t < 10 * 60e3);
     if (recent.length >= 5) throw httpError(429, "Слишком много заявок подряд. Позвоните нам: менеджер поможет быстрее.");
-    const { order, error } = buildOrder({ catalog: store.getCatalog(), orders: store.getOrders(), body, tgUser: user });
+    const { order, error } = buildOrder({ catalog: catalogForOrder(), orders: store.getOrders(), body, tgUser: user });
     if (error) throw httpError(400, error);
     const L = loyal();
     const c = user ? customers.touch(user, user.startParam) : null;
@@ -507,8 +554,14 @@ function createApp(opts = {}) {
       }
     }
     const payNow = order.payMethod === "transfer" && order.transferMode !== "after";
-    notifyOrder(order).catch(() => {});
     const S = store.getCatalog().settings;
+    if (payNow && shop.receipt) {
+      // the order reaches the florist only after the receipt — POST /api/orders/:id/receipt
+      order.awaitReceipt = true; store.saveOrders();
+      if (user) sendUser(user.id, `Заявка №${order.id} создана ${E()}\nОплатите ${formatRub(order.toPay)} переводом и прикрепите чек в приложении — сразу после этого заказ уйдёт флористу.\nБез чека заявка отменится через час.`, "Оплатить").catch(() => {});
+      return { id: order.id, giftLink, transfer: transferInfo(order) };
+    }
+    notifyOrder(order).catch(() => {});
     if (user) sendUser(user.id, `Спасибо! Заявка №${order.id} принята ${E()}\n` + (payNow
       ? `К оплате ${formatRub(order.toPay)}. Реквизиты для перевода — в приложении (Профиль → Мои заказы → «Оплатить»).`
       : `Менеджер ${S.brand || ""} свяжется с вами в течение 10 минут${S.hours ? " (" + S.hours.toLowerCase() + ")" : ""}.`.replace("  ", " ")), payNow ? "Оплатить" : false).catch(() => {});
@@ -700,7 +753,7 @@ function createApp(opts = {}) {
     return out;
   }
 
-  on("GET", "/api/admin/catalog", ({ user }) => Object.assign({}, store.getCatalog(), isOwner(user) ? {} : { settings: Object.assign({}, store.getCatalog().settings, { transfer: undefined, staff: undefined, invites: undefined }) }, { loyaltyResolved: loyal(), paymentsResolved: Object.assign({}, paySettings(), onlinePayAllowed ? {} : { enabled: false }), onlinePayAllowed, transferResolved: isOwner(user) ? transferSettings() : null, env: { yookassa: !!(process.env.YOOKASSA_SHOP_ID && process.env.YOOKASSA_SECRET_KEY) } }), { admin: true });
+  on("GET", "/api/admin/catalog", ({ user }) => Object.assign({}, store.getCatalog(), isOwner(user) ? {} : { settings: Object.assign({}, store.getCatalog().settings, { transfer: undefined, staff: undefined, invites: undefined }) }, { shop: shopPublic(), loyaltyResolved: loyal(), paymentsResolved: Object.assign({}, paySettings(), onlinePayAllowed ? {} : { enabled: false }), onlinePayAllowed, transferResolved: isOwner(user) ? transferSettings() : null, env: { yookassa: !!(process.env.YOOKASSA_SHOP_ID && process.env.YOOKASSA_SECRET_KEY) } }), { admin: true });
   on("GET", "/api/admin/orders", () => ({ orders: store.getOrders().list.slice(-200).reverse().map((o) => ({ ...o, summary: summaryText(o) })) }), { admin: true });
   on("PATCH", "/api/admin/orders/:id", ({ params, body }) => {
     const o = store.getOrders().list.find((x) => String(x.id) === params.id);
@@ -1209,6 +1262,20 @@ function createApp(opts = {}) {
     }
     let ordersChanged = false;
     for (const o of store.getOrders().list) {
+      // transfer without a receipt: a reminder after 20 minutes, cancelled after an hour (the florist never saw it)
+      if (o.awaitReceipt && o.status === "new" && !o.paid) {
+        const age = now - new Date(o.createdAt);
+        if (age > 60 * 60e3) {
+          o.status = "cancel"; o.cancelReason = "Нет чека об оплате за 60 минут"; delete o.awaitReceipt; ordersChanged = true;
+          const c = o.tgUser && db.list[String(o.tgUser.id)];
+          if (c && o.bonusUsed && !o.bonusRefunded) { LY.addBonus(c, o.bonusUsed, "refund", { now, days: L.burnDays, orderId: o.id, note: `Возврат за отменённый заказ №${o.id}` }); o.bonusRefunded = true; changed = true; }
+          if (o.tgUser) await sendUser(o.tgUser.id, `Заявка №${o.id} отменена: мы не получили чек об оплате. Если вы уже перевели деньги — напишите нам, разберёмся. Если букет ещё нужен — оформите заказ заново.`, true);
+        } else if (age > 20 * 60e3 && !o.receiptReminded) {
+          o.receiptReminded = true; ordersChanged = true;
+          if (o.tgUser) await sendUser(o.tgUser.id, `Заявка №${o.id} ждёт оплаты. Оплатите ${formatRub(o.toPay ?? o.totals.total)} и прикрепите чек — без него флорист не начнёт собирать букет.`, "Оплатить");
+        }
+        continue;
+      }
       if (o.status === "pay" && !o.paid && now - new Date(o.createdAt) > 60 * 60e3) {
         o.status = "cancel"; o.cancelReason = "Не оплачен за 60 минут"; ordersChanged = true;
         const c = o.tgUser && db.list[String(o.tgUser.id)];

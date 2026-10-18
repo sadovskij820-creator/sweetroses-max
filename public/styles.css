@@ -477,3 +477,12 @@ textarea.input { min-height: 84px; resize: vertical; }
 .rc-pics a { width: 76px; height: 76px; border-radius: 12px; overflow: hidden; display: block; }
 .rc-pics img { width: 100%; height: 100%; object-fit: cover; }
 .rc-reply { margin: 6px 0; padding: 8px 10px; border-radius: 12px; background: var(--accent-soft); font-size: 13px; color: var(--text); }
+
+/* payment by transfer with a receipt (18.10.2026) */
+.steps-pay{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:14px 0 12px}
+.steps-pay .sp{display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:14px;background:var(--surface);color:var(--muted);font-size:13.5px;font-weight:600}
+.steps-pay .sp b{width:24px;height:24px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;background:var(--line, rgba(0,0,0,.08));font-size:13px;flex:none}
+.steps-pay .sp.on{color:var(--text);box-shadow:inset 0 0 0 2px var(--accent)}
+.steps-pay .sp.on b{background:var(--accent);color:#fff}
+.steps-pay .sp.done b{background:#2BAA78;color:#fff}
+.receipt-box{box-shadow:inset 0 0 0 2px var(--accent)}

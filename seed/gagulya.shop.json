@@ -1,0 +1,8 @@
+{
+ "noLevels": true,
+ "noReviewBonus": true,
+ "timeText": true,
+ "recipient": true,
+ "receipt": true,
+ "commentHint": "Например: подписать открытку, позвонить получателю заранее"
+}

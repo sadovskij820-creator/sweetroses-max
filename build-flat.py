@@ -40,6 +40,9 @@ if SEED != 'catalog' and os.path.exists(imp):
     for f in json.load(open(imp, encoding='utf-8')).get('products', []):
         for ph in f.get('photos', []): shutil.copy(os.path.join(src, 'seed', 'import', ph), os.path.join(out, ph))
 json.dump(seed, open(os.path.join(out, 'catalog.seed.json'), 'w', encoding='utf-8'), ensure_ascii=False)
+# fixed options of the shop (seed/<SEED>.shop.json → catalog.shop.json, read by the server on every start)
+shopf = os.path.join(src, 'seed', SEED + '.shop.json')
+if os.path.exists(shopf): shutil.copy(shopf, os.path.join(out, 'catalog.shop.json'))
 pk = json.loads(rd('package.json')); pk['main'] = 'index.js'; pk['scripts'] = {'start': 'node index.js'}
 wr('package.json', json.dumps(pk, ensure_ascii=False, indent=2))
 wr('amvera.yml', 'meta:\n  environment: node\n  toolchain:\n    name: npm\n    version: 20\n\nrun:\n  scriptName: index.js\n  containerPort: 3000\n  persistenceMount: /data\n')

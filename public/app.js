@@ -196,7 +196,7 @@
     const lv = p.level;
     const pct = lv.next ? Math.max(4, Math.min(100, Math.round((lv.spent / (lv.spent + lv.next.remaining)) * 100))) : 100;
     return `<${link ? 'a href="#/profile"' : "div"} class="loyal-card">
-      <div class="lc-top"><span class="lc-level">${esc(lv.name)}</span><span class="lc-pct">${lv.percent}% бонусами</span></div>
+      ${SHOP().noLevels ? `<div class="lc-top"><span class="lc-level">Ваши бонусы</span></div>` : `<div class="lc-top"><span class="lc-level">${esc(lv.name)}</span><span class="lc-pct">${lv.percent}% бонусами</span></div>`}
       <div class="lc-bal"><b>${p.balance}</b> ${plural(p.balance, "бонус", "бонуса", "бонусов")}</div>
       ${feat("levels") ? `<div class="lc-bar"><i style="width:${pct}%"></i></div>
       <div class="lc-next">${lv.next ? `До уровня «${esc(lv.next.name)}» — ${rub(lv.next.remaining)}` : "Максимальный уровень 🎉"}</div>` : ""}
@@ -362,10 +362,13 @@
       phone: saved.phone || "",
       date: todayISO(0), time: "", method: "pickup", address: saved.address || "", zoneId: saved.zoneId && zoneById(saved.zoneId) ? saved.zoneId : "", comment: "", consent: false, errors: {}, sending: false,
       useBonus: false, marketing: !!(state.profile && state.profile.consent),
+      forOther: false, recipientName: "", recipientPhone: "",
     };
     return state.checkout;
   }
   /** Minutes we need before a slot: the zone's delivery time (the "to" end of the range), otherwise one hour. */
+  /** Fixed options of this shop (catalog.shop.json): Gagulya — no levels, wished time as text, customer + recipient, receipt. */
+  const SHOP = () => (state.catalog && state.catalog.shop) || {};
   function leadMinutes(c) {
     const z = c && c.method === "delivery" ? zoneById(c.zoneId) : null;
     return z ? z.to || z.from || 60 : 60;
@@ -384,7 +387,7 @@
       <div class="zones">${zs.map((x) => `<button class="zone" data-action="zone" data-id="${esc(x.id)}" aria-pressed="${String(x.id) === String(c.zoneId)}">
         <b>${esc(x.name)}</b><span>${x.price ? rub(x.price) : "бесплатно"}${P.zoneTime(x) ? " · " + P.zoneTime(x) : ""}</span>${x.freeFrom && x.price ? `<small>бесплатно от ${rub(x.freeFrom)}</small>` : ""}</button>`).join("")}</div>
       ${e.zone ? `<div class="err">${e.zone}</div>` : ""}
-      ${z && P.zoneTime(z) ? `<div class="muted" style="font-size:13px;margin-top:8px">Привезём за ${P.zoneTime(z)} после готовности. Время ниже показываем только то, к которому успеем.</div>` : ""}</div>`;
+      ${z && P.zoneTime(z) ? `<div class="muted" style="font-size:13px;margin-top:8px">Привезём за ${P.zoneTime(z)} после готовности.${SHOP().timeText ? "" : " Время ниже показываем только то, к которому успеем."}</div>` : ""}</div>`;
   }
   function viewCheckout() {
     if (!state.cart.lines.length) { location.hash = "#/cart"; return ""; }
@@ -395,9 +398,11 @@
     const zs = zones();
     return `<div class="page">
       <h1 class="display" style="font-size:36px;margin-top:8px">Оформление</h1>
-      <label class="field"><span>Ваше имя</span><input class="input ${e.name ? "invalid" : ""}" data-input="co.name" value="${esc(c.name)}" autocomplete="name">${e.name ? `<div class="err">${e.name}</div>` : ""}</label>
-      <label class="field"><span>Телефон</span><input class="input ${e.phone ? "invalid" : ""}" data-input="co.phone" value="${esc(c.phone)}" type="tel" inputmode="tel" placeholder="+7 900 000-00-00" autocomplete="tel">${e.phone ? `<div class="err">${e.phone}</div>` : ""}</label>
+      ${SHOP().recipient ? `<h2 class="h2" style="font-size:20px;margin:14px 0 0">Заказчик</h2>` : ""}
+      <label class="field"><span>${SHOP().recipient ? "Ваше имя" : "Ваше имя"}</span><input class="input ${e.name ? "invalid" : ""}" data-input="co.name" value="${esc(c.name)}" autocomplete="name">${e.name ? `<div class="err">${e.name}</div>` : ""}</label>
+      <label class="field"><span>${SHOP().recipient ? "Ваш телефон" : "Телефон"}</span><input class="input ${e.phone ? "invalid" : ""}" data-input="co.phone" value="${esc(c.phone)}" type="tel" inputmode="tel" placeholder="+7 900 000-00-00" autocomplete="tel">${e.phone ? `<div class="err">${e.phone}</div>` : ""}</label>
       ${canShareContact() ? `<button class="btn ghost small" style="margin-top:8px" data-action="shareContact">Взять номер из ${HOST_NAME}</button>` : ""}
+      ${SHOP().recipient ? recipientBlock(c, e) : ""}
 
       <div class="field"><span>Как получить</span>
         <div class="seg"><button data-action="method" data-m="pickup" aria-pressed="${c.method === "pickup"}">Самовывоз</button><button data-action="method" data-m="delivery" aria-pressed="${c.method === "delivery"}">Доставка</button></div>
@@ -406,13 +411,13 @@
       ${c.method === "delivery" ? zonePicker(c, e) : ""}
       ${c.method === "delivery" ? `<label class="field"><span>Адрес доставки</span><input class="input ${e.address ? "invalid" : ""}" data-input="co.address" value="${esc(c.address)}" placeholder="Улица, дом, квартира, подъезд" autocomplete="street-address">${e.address ? `<div class="err">${e.address}</div>` : ""}</label>` : ""}
 
-      <label class="field"><span>Дата готовности</span><input class="input" type="date" data-input="co.date" value="${esc(c.date)}" min="${todayISO(0)}" max="${todayISO(60)}"></label>
-      <div class="field"><span>Время готовности</span>
+      <label class="field"><span>${SHOP().timeText ? "Дата" : "Дата готовности"}</span><input class="input" type="date" data-input="co.date" value="${esc(c.date)}" min="${todayISO(0)}" max="${todayISO(60)}"></label>
+      ${SHOP().timeText ? timeTextField(c, e) : `<div class="field"><span>Время готовности</span>
         <div class="slots">${slots.map((x) => `<button class="slot" data-action="slot" data-t="${x.s}" aria-pressed="${c.time === x.s}" ${x.disabled ? "disabled" : ""}>${x.s}</button>`).join("")}</div>
         ${e.time ? `<div class="err">${e.time}</div>` : ""}
         ${slots.every((x) => x.disabled) ? `<div class="muted" style="font-size:13px;margin-top:6px">На сегодня свободного времени уже нет. Выберите другую дату.</div>` : ""}
-      </div>
-      <label class="field"><span>Пожелания к заказу</span><textarea class="input" data-input="co.comment" maxlength="500" placeholder="Например: без орехов, позвонить получателю">${esc(c.comment)}</textarea></label>
+      </div>`}
+      <label class="field"><span>Пожелания к заказу</span><textarea class="input" data-input="co.comment" maxlength="500" placeholder="${esc(SHOP().commentHint || "Например: без орехов, позвонить получателю")}">${esc(c.comment)}</textarea></label>
       ${feat("giftcard") && host ? `<label class="bonus-box" style="background:var(--surface)"><input type="checkbox" data-input="co.isGift" ${c.isGift ? "checked" : ""}>
         <span><b>Это подарок 🎁</b><small>Отправим получателю цифровую открытку с вашими словами${feat("bonuses") && LOY().giftBonus ? ` и ${LOY().giftBonus} бонусов на его первый заказ` : ""}.</small></span></label>
       ${c.isGift ? `<label class="field"><span>Кому</span><input class="input" data-input="co.giftTo" value="${esc(c.giftTo || "")}" maxlength="40" placeholder="Например: Маше"></label>
@@ -432,10 +437,24 @@
       ${e.consent ? `<div class="err">${e.consent}</div>` : ""}
       ${e.form ? `<div class="err" style="margin-top:10px">${esc(e.form)}</div>` : ""}
       <button class="btn block" style="margin-top:16px" data-action="submitOrder" ${c.sending ? "disabled" : ""}>${c.sending ? "Отправляем…" : payOnline() || transferNow() ? "Перейти к оплате" : "Отправить заявку"}</button>
-      <p class="muted" style="font-size:12.5px;text-align:center;margin:10px 0 0">${payOnline() ? "Оплата картой или по СБП. Заказ подтвердим сразу после оплаты." : transferNow() ? "Оплата переводом на карту или по СБП — реквизиты на следующем шаге. Можно оплатить в любое время, даже ночью." : transferOn() ? "Оплата переводом после подтверждения: менеджер пришлёт реквизиты в чат." : "Оплата после звонка менеджера. Заказ готовим после 100% предоплаты."}</p>
+      <p class="muted" style="font-size:12.5px;text-align:center;margin:10px 0 0">${payOnline() ? "Оплата картой или по СБП. Заказ подтвердим сразу после оплаты." : transferNow() ? (SHOP().receipt ? "Оплата переводом на карту или по СБП — реквизиты на следующем шаге. После перевода прикрепите чек: заказ сразу уйдёт флористу." : "Оплата переводом на карту или по СБП — реквизиты на следующем шаге. Можно оплатить в любое время, даже ночью.") : transferOn() ? "Оплата переводом после подтверждения: менеджер пришлёт реквизиты в чат." : "Оплата после звонка менеджера. Заказ готовим после 100% предоплаты."}</p>
     </div>`;
   }
 
+  /** Who gets the bouquet: «Себе» or «Другому человеку» — then the recipient's name and phone are required. */
+  function recipientBlock(c, e) {
+    return `<h2 class="h2" style="font-size:20px;margin:18px 0 0">Получатель</h2>
+      <div class="field" style="margin-top:8px"><div class="seg"><button data-action="recipient" data-v="self" aria-pressed="${!c.forOther}">Получу сам(а)</button><button data-action="recipient" data-v="other" aria-pressed="${!!c.forOther}">Другой человек</button></div></div>
+      ${c.forOther ? `<label class="field"><span>Имя получателя</span><input class="input ${e.recipientName ? "invalid" : ""}" data-input="co.recipientName" value="${esc(c.recipientName)}" maxlength="80" placeholder="Например: Анна">${e.recipientName ? `<div class="err">${e.recipientName}</div>` : ""}</label>
+      <label class="field"><span>Телефон получателя</span><input class="input ${e.recipientPhone ? "invalid" : ""}" data-input="co.recipientPhone" value="${esc(c.recipientPhone)}" type="tel" inputmode="tel" placeholder="+7 900 000-00-00">${e.recipientPhone ? `<div class="err">${e.recipientPhone}</div>` : ""}</label>
+      <div class="muted" style="font-size:13px;margin-top:6px">Курьер позвонит получателю, чтобы передать букет.</div>`
+      : `<div class="muted" style="font-size:13px;margin-top:6px">Букет для кого-то другого? Нажмите «Другой человек» и укажите его имя и телефон.</div>`}`;
+  }
+  function timeTextField(c, e) {
+    const z = c.method === "delivery" ? zoneById(c.zoneId) : null;
+    return `<label class="field"><span>Желаемое время</span><input class="input ${e.time ? "invalid" : ""}" data-input="co.time" value="${esc(c.time)}" maxlength="60" placeholder="Например: 20:45, к 21:00 или через час">${e.time ? `<div class="err">${e.time}</div>` : ""}</label>
+      <div class="muted" style="font-size:13px;margin-top:6px">${z && P.zoneTime(z) ? `Доставка в ваш район — ${P.zoneTime(z)}. ` : ""}Если к этому времени не успеваем, заранее позвоним и договоримся.</div>`;
+  }
   function usableBonus(t) {
     const p = state.profile;
     if (!feat("bonuses") || !p || !p.balance) return 0;
@@ -538,6 +557,7 @@
     if (t.paid) return `<div class="page empty"><h1 class="display">Заказ №${esc(id)} оплачен</h1><p>Оплата получена ✅ Спасибо!</p><a class="btn" href="#/">На главную</a></div>`;
     if (!t.payable) return `<div class="page empty"><h1 class="display">Заказ №${esc(id)}</h1><p>Реквизиты для оплаты пришлём после подтверждения заказа.</p><a class="btn" href="#/profile">Мои заказы</a></div>`;
     const row = (label, value, copy) => value ? `<div class="req-row"><span>${label}</span><b>${esc(value)}</b>${copy ? `<button class="btn soft small" data-action="copyText" data-text="${esc(copy)}">Копировать</button>` : ""}</div>` : "";
+    if (t.receiptNeeded || (t.receipt && !t.paid)) return viewTransferReceipt(id, t, row);
     return `<div class="page">
       <h1 class="display" style="font-size:34px;margin-top:8px">Оплата</h1>
       <p class="lead">Заказ №${esc(id)} · перевод на карту или по СБП</p>
@@ -556,6 +576,36 @@
     </div>`;
   }
 
+  /** Pay by transfer, then «Я оплатил(а)» → attach the receipt; only then the order reaches the florist (Gagulya, 18.10.2026). */
+  function viewTransferReceipt(id, t, row) {
+    if (t.receipt) return `<div class="page empty"><div class="success-mark"><svg viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg></div>
+      <h1 class="display">Чек получен</h1><p style="max-width:34ch;margin:12px auto 22px">Заказ №${esc(id)} передан флористу. Подтверждение придёт в чат.</p><a class="btn" href="#/">На главную</a></div>`;
+    return `<div class="page">
+      <h1 class="display" style="font-size:34px;margin-top:8px">Оплата</h1>
+      <p class="lead">Заказ №${esc(id)} · перевод на карту или по СБП</p>
+      <div class="steps-pay">
+        <div class="sp ${t.step2 ? "done" : "on"}"><b>1</b><span>Переведите сумму</span></div>
+        <div class="sp ${t.step2 ? "on" : ""}"><b>2</b><span>Прикрепите чек</span></div>
+      </div>
+      <div class="pay-card">
+        <div class="pay-sum">${rub(t.amount)}</div>
+        ${row("Карта", t.card, t.card.replace(/\s/g, ""))}
+        ${row("СБП по номеру", t.phone, t.phone.replace(/[^\d+]/g, ""))}
+        ${row("Банк", t.bank)}
+        ${row("Получатель", t.holder)}
+        ${t.note ? `<p class="muted" style="font-size:13px;margin:10px 0 0">${esc(t.note)}</p>` : ""}
+        ${t.step2 ? "" : `<button class="btn block" style="margin-top:16px" data-action="receiptStep">Я оплатил(а)</button>`}
+      </div>
+      ${t.step2 ? `<div class="info-card receipt-box" data-receipt-box style="margin-top:14px;text-align:left">
+        <p><b>📎 Последний шаг — прикрепите чек</b></p>
+        <p class="muted" style="font-size:13.5px;margin-top:6px">Скриншот из банка или фото чека. Без него заказ не уйдёт флористу.</p>
+        <label class="btn block" style="margin-top:12px;${t.uploading ? "opacity:.6;pointer-events:none" : ""}"><input type="file" accept="image/*" hidden data-receipt-upload="${esc(id)}">${t.uploading ? "Отправляем чек…" : "Прикрепить чек"}</label>
+        ${t.uploadError ? `<div class="err" style="margin-top:8px">${esc(t.uploadError)}</div>` : ""}
+      </div>` : ""}
+      <p class="muted" style="font-size:12.5px;margin-top:12px">Переведите точную сумму. Заказ передадим флористу сразу после чека. Без чека заявка отменится через час.</p>
+    </div>`;
+  }
+
   /* ---------------- profile ---------------- */
   function viewProfile() {
     if (!host && !window.__MOCK) return `<div class="page empty"><h1 class="display">Профиль</h1><p>Откройте магазин через бота в ${HOST_NAME}, чтобы видеть бонусы и заказы.</p></div>`;
@@ -566,7 +616,7 @@
     const orders = p.orders;
     return `<div class="page">
       <h1 class="display" style="font-size:36px;margin-top:8px">${esc(p.name || "Профиль")}</h1>
-      ${feat("bonuses") ? loyaltyCard(p, false) + `<p class="muted" style="font-size:13px;margin:10px 2px 0">Начисляем ${lv.percent}% от суммы выполненного заказа. Бонусами можно оплатить до ${L.maxPayPercent}% заказа. ${feat("burn") ? `Бонусы действуют ${L.burnDays} дней.` : ""}</p>` : ""}
+      ${feat("bonuses") ? loyaltyCard(p, false) + `<p class="muted" style="font-size:13px;margin:10px 2px 0">${lv.percent ? `Начисляем ${lv.percent}% от суммы выполненного заказа. ` : ""}Бонусами можно оплатить до ${L.maxPayPercent}% заказа. ${feat("burn") ? `Бонусы действуют ${L.burnDays} дней.` : ""}</p>` : ""}
       ${feat("bonuses") && feat("levels") ? `<div class="levels">${L.levels.map((x) => `<div class="${x.name === lv.name ? "on" : ""}"><b>${esc(x.name)}</b><span>${x.percent}%</span><small>${x.from ? "от " + rub(x.from) : "сразу"}</small></div>`).join("")}</div>` : ""}
 
       ${feat("referral") && p.refLink ? `<h2 class="h2">Пригласите друга</h2>
@@ -593,7 +643,7 @@
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">
           ${feat("repeat") ? `<button class="btn soft small" data-action="repeatOrder" data-id="${o.id}">Повторить</button>` : ""}
           ${o.status === "pay" && !o.paid ? `<button class="btn small" data-action="retryPay" data-id="${o.id}">Оплатить</button>` : ""}
-          ${o.transferPayable && !o.transferClaimed ? `<a class="btn small" href="#/transfer/${o.id}" data-action="openTransfer" data-id="${o.id}">Оплатить ${rub(o.toPay)}</a>` : ""}
+          ${o.transferPayable && !o.transferClaimed ? `<a class="btn small" href="#/transfer/${o.id}" data-action="openTransfer" data-id="${o.id}">${o.awaitReceipt ? "Оплатить и прикрепить чек" : "Оплатить " + rub(o.toPay)}</a>` : ""}
           ${o.transferPayable && o.transferClaimed ? `<span class="muted" style="font-size:13px;align-self:center">💳 Оплата на проверке</span>` : ""}
           ${o.giftLink ? `<button class="btn ghost small" data-action="sendGift" data-link="${esc(o.giftLink)}">🎁 Открытка</button>` : ""}
         </div></div>`).join("") : `<p class="muted">Здесь появятся ваши заказы.</p>`}
@@ -758,7 +808,9 @@
   }
   function payBadge(o) {
     if (o.payMethod !== "transfer") return "";
-    if (o.paid) return `<div class="pay-badge ok">✅ Оплата получена (перевод)</div>`;
+    if (o.paid) return `<div class="pay-badge ok">✅ Оплата получена (перевод)${o.receipt ? ` · <a href="${esc(o.receipt)}" data-ext>чек</a>` : ""}</div>`;
+    if (o.awaitReceipt) return `<div class="pay-badge wait">⏳ Ждём оплату и чек — флористу заявка ещё не приходила</div>`;
+    if (o.receipt) return `<div class="pay-badge claim">💳 Клиент прикрепил чек — <a href="${esc(o.receipt)}" data-ext>открыть чек</a>. Проверьте поступление в банке</div>`;
     if (o.transferClaimedAt) return `<div class="pay-badge claim">💳 Клиент сообщил об оплате ${ddmm(o.transferClaimedAt)} в ${new Intl.DateTimeFormat("ru-RU", { timeZone: TZ, hour: "2-digit", minute: "2-digit" }).format(new Date(o.transferClaimedAt))} — проверьте в банке</div>`;
     return `<div class="pay-badge wait">💳 Перевод: ${o.transferMode === "after" ? "реквизиты уйдут клиенту после «В работе»" : "ждём оплату"}</div>`;
   }
@@ -1061,7 +1113,7 @@
     const L = d.loyaltyResolved, P = d.paymentsResolved;
     return `<form data-form="loyalty">
       <h2 class="h2" style="font-size:22px;margin-top:6px">Функции</h2>
-      ${Object.entries(FEATURE_NAMES).filter(([k]) => k !== "payments" || d.onlinePayAllowed !== false).map(([k, t]) => `<label class="toggle-row"><span>${t}</span><input type="checkbox" name="f_${k}" ${L.features[k] ? "checked" : ""}></label>`).join("")}
+      ${Object.entries(FEATURE_NAMES).filter(([k]) => (k !== "payments" || d.onlinePayAllowed !== false) && !(k === "levels" && d.shop && d.shop.noLevels)).map(([k, t]) => `<label class="toggle-row"><span>${t}</span><input type="checkbox" name="f_${k}" ${L.features[k] ? "checked" : ""}></label>`).join("")}
       <h2 class="h2" style="font-size:22px">Бонусы</h2>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
         <label class="field"><span>Оплата бонусами, до % заказа</span><input class="input" name="maxPayPercent" type="number" min="0" max="100" value="${L.maxPayPercent}"></label>
@@ -1069,14 +1121,14 @@
         <label class="field"><span>Напомнить о сгорании за, дней</span><input class="input" name="burnRemindDays" type="number" min="1" max="30" value="${L.burnRemindDays}"></label>
         <label class="field"><span>Напомнить о дате за, дней</span><input class="input" name="datesRemindDays" type="number" min="1" max="14" value="${L.datesRemindDays}"></label>
       </div>
-      <h2 class="h2" style="font-size:22px">Уровни</h2>
+${d.shop && d.shop.noLevels ? "" : `      <h2 class="h2" style="font-size:22px">Уровни</h2>
       ${L.levels.map((lv, i) => `<div style="display:grid;grid-template-columns:1fr 100px 70px;gap:8px;margin-top:8px"><input class="input" name="lv_name_${i}" value="${esc(lv.name)}" aria-label="Название"><input class="input" name="lv_from_${i}" type="number" min="0" value="${lv.from}" aria-label="От суммы, ₽" ${i === 0 ? "readonly" : ""}><input class="input" name="lv_pct_${i}" type="number" min="0" max="50" value="${lv.percent}" aria-label="%"></div>`).join("")}
-      <p class="muted" style="font-size:12.5px">Название · от суммы выполненных заказов, ₽ · процент бонусами</p>
+      <p class="muted" style="font-size:12.5px">Название · от суммы выполненных заказов, ₽ · процент бонусами</p>`}
       <h2 class="h2" style="font-size:22px">Подарки новым</h2>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
         <label class="field"><span>Приветственный, бонусов</span><input class="input" name="welcomeBonus" type="number" min="0" value="${L.welcomeBonus}"></label>
         <label class="field"><span>Получателю открытки, бонусов</span><input class="input" name="giftBonus" type="number" min="0" value="${L.giftBonus}"></label>
-        <label class="field"><span>За отзыв, бонусов</span><input class="input" name="reviewBonus" type="number" min="0" value="${L.reviewBonus}"></label>
+        ${d.shop && d.shop.noReviewBonus ? "" : `<label class="field"><span>За отзыв, бонусов</span><input class="input" name="reviewBonus" type="number" min="0" value="${L.reviewBonus}"></label>`}
       </div>
       <h2 class="h2" style="font-size:22px">Приведи друга</h2>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
@@ -1234,6 +1286,8 @@
     }
     if (act === "method") { initCheckout().method = ds.m; fixSlot(); render(); return; }
     if (act === "zone") { const c = initCheckout(); c.zoneId = ds.id; delete c.errors.zone; fixSlot(); haptic(); render(); return; }
+    if (act === "recipient") { const c = initCheckout(); c.forOther = ds.v === "other"; delete c.errors.recipientName; delete c.errors.recipientPhone; haptic(); render(); return; }
+    if (act === "receiptStep") { if (state.transfer) { state.transfer.step2 = true; haptic(); render(); setTimeout(() => { const el = $app.querySelector("[data-receipt-box]"); el && el.scrollIntoView({ block: "center", behavior: "smooth" }); }, 50); } return; }
     if (act === "openTransfer") { state.transfer = null; return; }
     if (act === "transferDone") {
       const t = state.transfer; if (!t) return;
@@ -1418,13 +1472,27 @@
       const f = k.slice(3);
       initCheckout()[f] = v;
       if (state.checkout.errors[f]) { delete state.checkout.errors[f]; }
-      if (f === "date") { state.checkout.time = ""; fixSlot(); render(); }
+      if (f === "date" && !SHOP().timeText) { state.checkout.time = ""; fixSlot(); render(); }
       if (f === "consent" || f === "useBonus" || f === "marketing" || f === "isGift") render();
     }
   });
 
   document.addEventListener("change", async (ev) => {
     const t = ev.target;
+    if (t.dataset.receiptUpload !== undefined) {
+      const file = t.files && t.files[0]; t.value = "";
+      const tr = state.transfer; if (!file || !tr) return;
+      tr.uploading = true; tr.uploadError = ""; render();
+      try {
+        const body = await shrinkPhoto(file);
+        if (body.size > 4e6) throw new Error("Файл слишком большой — сделайте скриншот чека");
+        const res = await fetch(`/api/orders/${encodeURIComponent(t.dataset.receiptUpload)}/receipt`, { method: "POST", headers: { "Content-Type": body.type || "application/octet-stream", "X-Init-Data": INIT_DATA }, body });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || "Не удалось отправить чек — попробуйте ещё раз");
+        state.transfer = Object.assign({}, data); haptic("ok"); loadProfile(); render();
+      } catch (e) { tr.uploading = false; tr.uploadError = e.message; render(); }
+      return;
+    }
     if (t.dataset.reviewUpload !== undefined) {
       const file = t.files && t.files[0]; t.value = "";
       if (!file) return;
@@ -1567,7 +1635,12 @@
     if (digits.length < 10 || digits.length > 12) e.phone = "Проверьте номер: нужно 10–11 цифр, например +7 900 000-00-00";
     if (c.method === "delivery" && zones().length && !zoneById(c.zoneId)) e.zone = "Выберите район — от него зависят цена и время доставки";
     if (c.method === "delivery" && c.address.trim().length < 5) e.address = "Укажите улицу и дом для курьера";
-    if (!c.time) e.time = "Выберите время готовности";
+    if (SHOP().timeText ? !String(c.time || "").trim() : !c.time) e.time = SHOP().timeText ? "Напишите, к какому времени нужен букет" : "Выберите время готовности";
+    if (SHOP().recipient && c.forOther) {
+      if (String(c.recipientName || "").trim().length < 2) e.recipientName = "Укажите имя получателя";
+      const rd = String(c.recipientPhone || "").replace(/\D/g, "");
+      if (rd.length < 10 || rd.length > 12) e.recipientPhone = "Проверьте телефон получателя: 10–11 цифр";
+    }
     if (!c.consent) e.consent = "Без согласия мы не сможем принять заявку";
     return e;
   }
@@ -1579,7 +1652,8 @@
     try {
       const body = {
         cart: state.cart, promoCode: state.promo.percent ? state.promo.code : "",
-        customer: { name: c.name.trim(), phone: c.phone.trim(), date: c.date, time: c.time, method: c.method, address: c.address.trim(), zoneId: c.method === "delivery" ? c.zoneId || "" : "", comment: c.comment.trim() },
+        customer: { name: c.name.trim(), phone: c.phone.trim(), date: c.date, time: String(c.time || "").trim(), method: c.method, address: c.address.trim(), zoneId: c.method === "delivery" ? c.zoneId || "" : "", comment: c.comment.trim(),
+          forOther: !!c.forOther, recipientName: String(c.recipientName || "").trim(), recipientPhone: String(c.recipientPhone || "").trim() },
         useBonus: !!c.useBonus, consent: !!c.marketing,
         gift: c.isGift ? { to: (c.giftTo || "").trim(), text: (c.giftText || "").trim() } : undefined,
       };

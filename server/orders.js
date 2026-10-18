@@ -22,7 +22,21 @@ function validateCustomer(c, settings, now = new Date()) {
   const digits = out.phone.replace(/\D/g, "");
   if (digits.length < 10 || digits.length > 12) errors.push("Проверьте номер телефона");
   if (!/^\d{4}-\d{2}-\d{2}$/.test(out.date) || out.date < todayISO(now)) errors.push("Выберите дату готовности не раньше сегодняшней");
-  if (!(settings.timeSlots || []).includes(out.time)) errors.push("Выберите время готовности из списка");
+  if (settings.timeText) {
+    // the customer writes the wished time himself («20:45», «через полчаса») — Gagulya, 18.10.2026
+    out.time = str(c.time, 60);
+    if (!out.time) errors.push("Напишите желаемое время");
+  } else if (!(settings.timeSlots || []).includes(out.time)) errors.push("Выберите время готовности из списка");
+  if (settings.recipient) {
+    // who pays and who gets the bouquet; «for another person» makes the recipient's name and phone required
+    out.forOther = !!c.forOther;
+    if (out.forOther) {
+      out.recipientName = str(c.recipientName, 80); out.recipientPhone = str(c.recipientPhone, 30);
+      if (out.recipientName.length < 2) errors.push("Укажите имя получателя");
+      const rd = out.recipientPhone.replace(/\D/g, "");
+      if (rd.length < 10 || rd.length > 12) errors.push("Проверьте телефон получателя");
+    }
+  }
   if (out.method === "delivery" && out.address.length < 5) errors.push("Укажите адрес доставки");
   return { customer: out, errors };
 }
@@ -44,7 +58,7 @@ function buildOrder({ catalog, orders, body, tgUser, now = new Date() }) {
   if (totals.errors.length) return { error: totals.errors.join(". ") + ". Обновите корзину." };
   if (totals.deliveryError) return { error: totals.deliveryError };
   // a zone's delivery time: today we only take slots the courier can still make
-  if (totals.delivery && customer.date === todayISO(now) && slotMin(customer.time) < minutesNow(now) + (totals.delivery.to || totals.delivery.from || 60) - 15) {
+  if (totals.delivery && !catalog.settings.timeText && customer.date === todayISO(now) && slotMin(customer.time) < minutesNow(now) + (totals.delivery.to || totals.delivery.from || 60) - 15) {
     return { error: "К этому времени доставка в ваш район уже не успеет. Выберите время позже или другую дату." };
   }
   if (!totals.lines.length) return { error: "Корзина пуста" };
@@ -57,6 +71,8 @@ function buildOrder({ catalog, orders, body, tgUser, now = new Date() }) {
     totals: { lines: totals.lines, addons: totals.addons, subtotal: totals.subtotal, discount: totals.discount, delivery: totals.delivery, total: totals.total, promo: totals.promo },
     tgUser: tgUser ? { id: tgUser.id, username: tgUser.username || "", name: [tgUser.first_name, tgUser.last_name].filter(Boolean).join(" ") } : null,
   };
+  if (catalog.settings.timeText) order.timeText = true;
+  if (catalog.settings.recipient) order.recipient = customer.forOther ? { name: customer.recipientName, phone: customer.recipientPhone } : null;
   return { order };
 }
 
@@ -70,9 +86,11 @@ function summaryText(o) {
   ];
   const d = t.delivery;
   const where = o.method !== "delivery" ? "Самовывоз" : d ? `Доставка: ${d.title} — ${o.address}` : "Доставка: " + o.address;
+  const rcp = o.recipient === undefined ? "" : o.recipient ? `Получатель: ${o.recipient.name}, ${o.recipient.phone}` : "Получатель: сам заказчик";
   return [
-    `${o.name}, ${o.phone}`,
-    `${where} · ${ruDate(o.date)} к ${o.time}`,
+    (o.recipient !== undefined ? "Заказчик: " : "") + `${o.name}, ${o.phone}`,
+    rcp,
+    o.timeText ? `${where} · ${ruDate(o.date)} · время: ${o.time}` : `${where} · ${ruDate(o.date)} к ${o.time}`,
     ...rows,
     t.discount ? `Скидка ${t.promo.percent}% (${t.promo.code}): −${formatRub(t.discount)}` : "",
     d ? `Доставка (${d.title}${zoneTime(d) ? ", " + zoneTime(d) : ""}): ${d.free ? "бесплатно" : formatRub(d.price)}` : "",
@@ -85,6 +103,7 @@ function summaryText(o) {
 /** Payment by transfer to the shop's card: what the manager should know right now. */
 function transferLine(o) {
   if (o.paid) return "✅ <b>Оплата получена</b> (перевод на карту)";
+  if (o.receipt) return "💳 <b>Клиент оплатил переводом и прикрепил чек</b> (фото ниже). Проверьте поступление в банке и нажмите «Оплата получена» в приложении.";
   if (o.transferClaimedAt) return "💳 <b>Клиент сообщил, что оплатил переводом.</b> Проверьте поступление в банке и нажмите «Оплата получена» в приложении.";
   return o.transferMode === "after" ? "💳 Оплата переводом — после вашего подтверждения (кнопка «Подтвердить»: клиенту уйдут реквизиты)" : "💳 Оплата переводом на карту — клиент ещё не сообщил об оплате";
 }
