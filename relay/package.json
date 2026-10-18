@@ -1,0 +1,9 @@
+{
+  "name": "digitap-telegram-relay",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Пересылка запросов бота в Telegram для магазина на сервере в России. Ничего не хранит.",
+  "main": "index.js",
+  "engines": { "node": ">=18" },
+  "scripts": { "start": "node index.js" }
+}

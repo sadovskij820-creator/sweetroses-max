@@ -31,10 +31,17 @@ function signInitData(user, botToken, authDate = Math.floor(Date.now() / 1000), 
   return params.toString();
 }
 
-function createBot({ token, webAppUrl, log = console }) {
-  const base = `https://api.telegram.org/bot${token}`;
+/**
+ * apiUrl / relayKey (env TELEGRAM_API_URL, TELEGRAM_RELAY_KEY): when the shop runs on a server in Russia that can't reach
+ * api.telegram.org, every call goes through our small relay abroad (relay/index.js) — it stores nothing.
+ */
+function createBot({ token, webAppUrl, log = console, apiUrl = process.env.TELEGRAM_API_URL || "", relayKey = process.env.TELEGRAM_RELAY_KEY || "" }) {
+  const api = String(apiUrl || "https://api.telegram.org").replace(/\/+$/, "");
+  const viaRelay = api !== "https://api.telegram.org";
+  const base = `${api}/bot${token}`;
+  const H = (h) => Object.assign(h || {}, viaRelay && relayKey ? { "X-Relay-Key": relayKey } : {});
   async function call(method, body) {
-    const res = await fetch(`${base}/${method}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+    const res = await fetch(`${base}/${method}`, { method: "POST", headers: H({ "Content-Type": "application/json" }), body: JSON.stringify(body || {}) });
     const data = await res.json().catch(() => ({}));
     if (!data.ok) throw new Error(`Telegram ${method}: ${data.description || res.status}`);
     return data.result;
@@ -59,8 +66,36 @@ function createBot({ token, webAppUrl, log = console }) {
   async function sendPhotos(chatId, urls, caption) {
     urls = (urls || []).slice(0, 10);
     if (!urls.length) return null;
-    if (urls.length === 1) return call("sendPhoto", { chat_id: chatId, photo: urls[0], caption: String(caption || "").slice(0, 1000) });
-    return call("sendMediaGroup", { chat_id: chatId, media: urls.map((u, i) => Object.assign({ type: "photo", media: u }, i ? {} : { caption: String(caption || "").slice(0, 1000) })) });
+    try {
+      if (urls.length === 1) return await call("sendPhoto", { chat_id: chatId, photo: urls[0], caption: String(caption || "").slice(0, 1000) });
+      return await call("sendMediaGroup", { chat_id: chatId, media: urls.map((u, i) => Object.assign({ type: "photo", media: u }, i ? {} : { caption: String(caption || "").slice(0, 1000) })) });
+    } catch (e) {
+      // Telegram could not fetch the pictures by link (e.g. the shop's server is in Russia) — upload them as files instead
+      const fd = new FormData();
+      fd.append("chat_id", String(chatId));
+      const media = [];
+      for (const [i, u] of urls.entries()) {
+        const r = await fetch(u).catch(() => null);
+        if (!r || !r.ok) continue;
+        const buf = Buffer.from(await r.arrayBuffer());
+        fd.append("f" + i, new Blob([buf], { type: r.headers.get("content-type") || "image/jpeg" }), "photo" + i + ".jpg");
+        media.push(Object.assign({ type: "photo", media: "attach://f" + i }, media.length ? {} : { caption: String(caption || "").slice(0, 1000) }));
+      }
+      if (!media.length) throw e;
+      let method = "sendMediaGroup";
+      if (media.length === 1) {
+        // one picture: sendPhoto (an album needs at least two)
+        method = "sendPhoto";
+        const f = fd.get(media[0].media.replace("attach://", ""));
+        fd.delete(media[0].media.replace("attach://", ""));
+        fd.append("photo", f, "photo.jpg");
+        fd.append("caption", String(caption || "").slice(0, 1000));
+      } else fd.append("media", JSON.stringify(media));
+      const res = await fetch(`${base}/${method}`, { method: "POST", headers: H(), body: fd });
+      const data = await res.json().catch(() => ({}));
+      if (!data.ok) throw new Error(`Telegram ${method}: ${data.description || res.status}`);
+      return data.result;
+    }
   }
 
   /** A file in the chat (night backup). Telegram bots may send files up to 50 MB. */
@@ -70,7 +105,7 @@ function createBot({ token, webAppUrl, log = console }) {
     fd.append("caption", String(caption || "").slice(0, 1000));
     fd.append("parse_mode", "HTML");
     fd.append("document", new Blob([buf], { type: "application/zip" }), filename);
-    const res = await fetch(`${base}/sendDocument`, { method: "POST", body: fd });
+    const res = await fetch(`${base}/sendDocument`, { method: "POST", headers: H(), body: fd });
     const data = await res.json().catch(() => ({}));
     if (!data.ok) throw new Error(`Telegram sendDocument: ${data.description || res.status}`);
     return data.result;
@@ -90,7 +125,7 @@ function createBot({ token, webAppUrl, log = console }) {
     let offset = 0;
     while (running) {
       try {
-        const updates = await call("getUpdates", { offset, timeout: 50, allowed_updates: ["message"] });
+        const updates = await call("getUpdates", { offset, timeout: viaRelay ? 25 : 50, allowed_updates: ["message"] });
         for (const u of updates) {
           offset = u.update_id + 1;
           const m = u.message;
