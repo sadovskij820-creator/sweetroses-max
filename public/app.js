@@ -230,12 +230,21 @@
     </div>`;
   }
 
+  // an order waiting for payment and the receipt — a reminder at the top of the home page and the cart
+  function payWaitBanner() {
+    const p = state.profile;
+    const o = p && (p.orders || []).find((x) => x.awaitReceipt && !x.paid && x.status !== "cancel");
+    if (!o) return "";
+    return `<a class="pay-wait" href="#/transfer/${o.id}" data-action="openTransfer" data-id="${o.id}"><span><b>Заказ №${o.id} ждёт оплаты</b><small>Оплатите ${rub(o.toPay)} и прикрепите чек — без него не начнём собирать</small></span><i>Оплатить →</i></a>`;
+  }
+
   function viewHome() {
     const s = state.catalog.settings;
     // the home page sections and chips come from the shop's settings (defaults = Sweet Roses)
     const sections = s.homeSections || [{ cat: "top", title: "Готовые подарки", more: "Все готовые подарки" }, { cat: "chocolate", title: "Боксы с клубникой", more: "Все боксы" }];
     const chips = s.heroChips || ["Доставка от 1 часа", "Производство по ГОСТу"];
     return `<div class="page">
+      ${payWaitBanner()}
       ${s.demoNote ? `<div class="demo-note">${esc(s.demoNote)}</div>` : ""}
       ${homeExtras()}
       <section class="hero">
@@ -315,11 +324,12 @@
 
   function viewCart() {
     if (!state.cart.lines.length) {
-      return `<div class="page empty"><h1 class="display">Корзина пуста</h1><p>${esc(state.catalog.settings.emptyCartText || "Загляните в каталог: там боксы, букеты и наборы с клубникой в шоколаде.")}</p><a class="btn" href="#/catalog/all">Открыть каталог</a></div>`;
+      return `<div class="page empty">${payWaitBanner()}<h1 class="display">Корзина пуста</h1><p>${esc(state.catalog.settings.emptyCartText || "Загляните в каталог: там боксы, букеты и наборы с клубникой в шоколаде.")}</p><a class="btn" href="#/catalog/all">Открыть каталог</a></div>`;
     }
     const t = totals();
     const addons = state.catalog.addons.filter((a) => !a.hidden);
     return `<div class="page">
+      ${payWaitBanner()}
       <h1 class="display" style="font-size:36px;margin-top:8px">Корзина</h1>
       ${state.cart.lines.map((l, i) => {
         const p = productById(l.id);
@@ -1778,11 +1788,18 @@ ${d.shop && d.shop.noLevels ? "" : `      <h2 class="h2" style="font-size:22px">
         state.me = m;
         state.start = m.start || {};
         const fresh = !location.hash.startsWith("#/");
-        if (fresh && state.start.paid) location.hash = `#/done/${state.start.paid}?paid=1`;
+        if (state.start.transfer) { state.transfer = null; location.hash = "#/transfer/" + state.start.transfer; }
+        else if (fresh && state.start.paid) location.hash = `#/done/${state.start.paid}?paid=1`;
         else if (fresh && state.start.gift) location.hash = "#/gift/" + state.start.gift;
         else if (fresh && state.start.productId) location.hash = "#/p/" + state.start.productId;
         else if (fresh && state.start.review) location.hash = "#/review";
-        render(); loadProfile();
+        render();
+        const deep = state.start.transfer || state.start.paid || state.start.gift || state.start.productId || state.start.review;
+        loadProfile().then(() => {
+          // opened the app any other way while an order still waits for the payment and the receipt → straight to its payment page
+          const o = !deep && state.profile && (state.profile.orders || []).find((x) => x.awaitReceipt && !x.paid && x.status !== "cancel" && Date.now() - new Date(x.createdAt).getTime() < 24 * 3600e3);
+          if (o && !/^#\/(transfer|admin|done)/.test(location.hash)) { state.transfer = null; location.hash = "#/transfer/" + o.id; }
+        });
       }).catch(() => {});
     } catch (e) {
       $app.innerHTML = `<div class="page empty"><h1 class="display">Не загрузилось</h1><p>${esc(e.message)}</p><button class="btn" onclick="location.reload()">Обновить</button></div>`;

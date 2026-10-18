@@ -137,3 +137,18 @@ test("a shop without these options works as before (slots, «Я оплатил»
   assert.ok(sent.some((m) => m.chat === "100" && m.text.includes(`№${r.data.id}`)), "the order comes at once, as before");
   assert.equal((await req(url + "/api/catalog", "GET")).data.loyalty.features.levels, true);
 });
+
+test("the «pay and attach the receipt» button opens the payment page of that very order", async (t) => {
+  const LY = require("../server/loyalty");
+  assert.deepEqual(LY.parseStart("pay_1010"), { pay: "1010" });
+  assert.deepEqual(LY.parseStart("pay_abc"), {});
+  const { app, url } = await start(); t.after(() => app.server.close());
+  const r = await req(url + "/api/orders", "POST", order(customer()), user(501));
+  assert.equal(r.status, 200);
+  const sp = (id, v) => tg.signInitData({ id, first_name: "К" }, TOKEN, undefined, { start_param: v });
+  assert.equal((await req(url + "/api/me", "GET", null, sp(501, "pay_" + r.data.id))).data.start.transfer, String(r.data.id));
+  // someone else's order is not opened
+  assert.equal((await req(url + "/api/me", "GET", null, sp(502, "pay_" + r.data.id))).data.start.transfer, undefined);
+  // the order also shows up in the customer's profile as waiting (the banner on the home page and the cart)
+  assert.ok((await req(url + "/api/profile", "GET", null, user(501))).data.orders.some((o) => o.id === r.data.id && o.awaitReceipt));
+});

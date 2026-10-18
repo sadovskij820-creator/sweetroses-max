@@ -65,6 +65,7 @@ function parseStart(sp) {
   let m;
   if ((m = /^ref_([0-9a-f]{8})$/.exec(sp))) return { ref: m[1] };
   if ((m = /^paid_(\d{1,12})$/.exec(sp))) return { paid: m[1] };
+  if ((m = /^pay_(\d{1,12})$/.exec(sp))) return { pay: m[1] };
   for (const part of sp.split("-")) {
     const i = part.indexOf("_");
     if (i < 1) continue;

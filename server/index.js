@@ -347,6 +347,11 @@ function createApp(opts = {}) {
       if (st.gift && findGift(st.gift)) start.gift = st.gift;
       if (st.paid) start.paid = st.paid;
       if (st.review) start.review = true;
+      // the «pay and attach the receipt» button: open the payment page of THIS order (only the customer's own order)
+      if (st.pay) {
+        const o = store.getOrders().list.find((x) => String(x.id) === st.pay && x.tgUser && String(x.tgUser.id) === String(user.id));
+        if (o) start.transfer = String(o.id);
+      }
     }
     return { isAdmin: isAdmin(user), isOwner: isOwner(user), platform: user ? user.platform : messenger, startParam: user ? user.startParam || "" : "", start, user: user ? { id: user.id, first_name: user.first_name } : null };
   });
@@ -560,7 +565,7 @@ function createApp(opts = {}) {
       // the customer pays and attaches the receipt — POST /api/orders/:id/receipt
       order.awaitReceipt = true; store.saveOrders();
       notifyOrder(order).catch(() => {});
-      if (user) sendUser(user.id, `Заказ №${order.id} оформлен ${E()}\nОплатите ${formatRub(order.toPay)} переводом и обязательно прикрепите чек в приложении — без чека мы не начнём собирать букет.`, "Оплатить").catch(() => {});
+      if (user) sendUser(user.id, `Заказ №${order.id} оформлен ${E()}\nОплатите ${formatRub(order.toPay)} переводом и обязательно прикрепите чек в приложении — без чека мы не начнём собирать букет.`, { text: "Оплатить и прикрепить чек", payload: "pay_" + order.id }).catch(() => {});
       return { id: order.id, giftLink, transfer: transferInfo(order) };
     }
     notifyOrder(order).catch(() => {});
@@ -1272,7 +1277,7 @@ function createApp(opts = {}) {
         const age = now - new Date(o.createdAt);
         if (age > 15 * 60e3 && !o.receiptReminded) {
           o.receiptReminded = true; ordersChanged = true;
-          if (o.tgUser) await sendUser(o.tgUser.id, `Заказ №${o.id}: прикрепите, пожалуйста, чек об оплате ${formatRub(o.toPay ?? o.totals.total)} — без него мы не начнём собирать букет. Ещё не оплатили? Реквизиты по кнопке ниже.`, "Оплатить и прикрепить чек");
+          if (o.tgUser) await sendUser(o.tgUser.id, `Заказ №${o.id}: прикрепите, пожалуйста, чек об оплате ${formatRub(o.toPay ?? o.totals.total)} — без него мы не начнём собирать букет. Ещё не оплатили? Реквизиты по кнопке ниже.`, { text: "Оплатить и прикрепить чек", payload: "pay_" + o.id });
         }
         if (age > 30 * 60e3 && !o.receiptNudged) {
           o.receiptNudged = true; ordersChanged = true;
