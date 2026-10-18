@@ -488,3 +488,13 @@ textarea.input { min-height: 84px; resize: vertical; }
 .receipt-box{box-shadow:inset 0 0 0 2px var(--accent)}
 .receipt-warn{margin-top:14px;padding:12px 14px;border-radius:14px;background:#FFF4D6;color:#5A4300;font-size:13.5px;line-height:1.4}
 [data-theme="dark"] .receipt-warn{background:#3A3016;color:#F5E2A8}
+
+/* categories in the admin: own picture for the circle, products of a category (18.10.2026) */
+.cat-admin{display:grid;grid-template-columns:64px 1fr auto;gap:12px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line, rgba(0,0,0,.08))}
+.cat-admin.is-hidden{opacity:.5}
+.cat-mid{display:flex;flex-direction:column;align-items:flex-start}
+.cat-ava{position:relative;width:64px;height:64px;border-radius:50%;background:var(--surface);cursor:pointer;display:block}
+.cat-ava img,.cat-ava .ph-empty{width:100%;height:100%;object-fit:cover;display:block;border-radius:50%}
+.cat-ava b{position:absolute;right:0;bottom:0;width:24px;height:24px;border-radius:50%;background:var(--bg, #fff);display:flex;align-items:center;justify-content:center;font-size:13px;box-shadow:0 1px 4px rgba(0,0,0,.2)}
+.cat-ava.big{width:96px;height:96px;flex:none}.cat-ava.big b{width:30px;height:30px;font-size:16px}
+.cat-head{display:flex;gap:16px;align-items:center;margin-top:14px}

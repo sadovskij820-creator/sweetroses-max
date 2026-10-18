@@ -115,6 +115,8 @@
   const visibleCats = () => state.catalog.categories.filter((c) => !c.hidden).sort((a, b) => a.sort - b.sort);
   const productById = (id) => state.catalog.products.find((p) => String(p.id) === String(id));
   function catCover(catId) {
+    const c = (state.catalog.categories || []).find((x) => x.id === catId);
+    if (c && c.image) return c.image; // the owner's own picture for the circle
     const p = visibleProducts().find((x) => x.cats.includes(catId));
     return p ? p.images[0] : "";
   }
@@ -810,8 +812,8 @@
     const d = fresh ? state.admin.data : null;
     let body = `<p class="muted">Загружаем…</p>`;
     if (d && d.error) body = `<p class="err">${esc(d.error)}</p>`;
-    else if (d) body = ({ pay: adminTransfer, staff: adminStaff, orders: adminOrders, products: adminProducts, categories: adminCategories, extras: adminExtras, settings: adminSettings, stats: adminStats, edit: adminEdit, customers: adminCustomers, customer: adminCustomer, broadcast: adminBroadcast, loyalty: adminLoyalty, promo: adminPromo, reviews: adminReviews }[tab] || adminOrders)(d, arg);
-    return `<div class="page"><h1 class="display" style="font-size:34px;margin-top:8px">Управление</h1>${tab === "edit" || tab === "customer" ? "" : adminTabs(tab)}${body}</div>`;
+    else if (d) body = ({ cat: adminCategory, pay: adminTransfer, staff: adminStaff, orders: adminOrders, products: adminProducts, categories: adminCategories, extras: adminExtras, settings: adminSettings, stats: adminStats, edit: adminEdit, customers: adminCustomers, customer: adminCustomer, broadcast: adminBroadcast, loyalty: adminLoyalty, promo: adminPromo, reviews: adminReviews }[tab] || adminOrders)(d, arg);
+    return `<div class="page"><h1 class="display" style="font-size:34px;margin-top:8px">Управление</h1>${tab === "edit" || tab === "customer" || tab === "cat" ? "" : adminTabs(tab)}${body}</div>`;
   }
   function payBadge(o) {
     if (o.payMethod !== "transfer") return "";
@@ -850,9 +852,10 @@
   }
   function adminEdit(d, id) {
     const isNew = id === "new";
-    const p = isNew ? { id: "", title: "", price: 0, oldPrice: null, short: "", intro: "", details: [], images: [], cats: [], chocolateChoices: 0, hidden: false } : d.products.find((x) => String(x.id) === String(id));
+    const p = isNew ? { id: "", title: "", price: 0, oldPrice: null, short: "", intro: "", details: [], images: [], cats: state.admin.fromCat ? [state.admin.fromCat] : [], chocolateChoices: 0, hidden: false } : d.products.find((x) => String(x.id) === String(id));
     if (!p) return `<p class="err">Товар не найден</p>`;
-    return `<a class="btn ghost small" href="#/admin/products">Назад к товарам</a>
+    const back = state.admin.fromCat ? `#/admin/cat/${esc(state.admin.fromCat)}` : "#/admin/products";
+    return `<a class="btn ghost small" href="${back}">${state.admin.fromCat ? "Назад к категории" : "Назад к товарам"}</a>
       <form data-form="product" data-id="${esc(p.id)}" style="margin-top:6px">
       <label class="field"><span>Название</span><input class="input" name="title" value="${esc(p.title)}" required></label>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
@@ -901,13 +904,49 @@
     if (!res.ok) throw new Error(data.error || "Не удалось загрузить фото");
     return data.url;
   }
+  /** The picture of a category in the admin: its own, otherwise the first product's photo (as on the home page). */
+  function adminCatCover(d, c) {
+    if (c.image) return c.image;
+    const p = d.products.slice().sort((a, b) => a.sort - b.sort).find((x) => !x.hidden && x.cats.includes(c.id));
+    return p ? p.images[0] : "";
+  }
   function adminCategories(d) {
     return `<button class="btn small" data-action="addCategory" style="margin-bottom:8px">Добавить категорию</button>
-      ${d.categories.slice().sort((a, b) => a.sort - b.sort).map((c) => `<div class="admin-row ${c.hidden ? "is-hidden" : ""}" style="grid-template-columns:1fr auto">
-      <input class="input" style="min-height:42px" value="${esc(c.title)}" data-rename="${esc(c.id)}" aria-label="Название категории">
-      <div class="mini"><button data-action="move" data-coll="categories" data-id="${esc(c.id)}" data-dir="-1" aria-label="Выше">↑</button><button data-action="move" data-coll="categories" data-id="${esc(c.id)}" data-dir="1" aria-label="Ниже">↓</button>
-      <button data-action="toggleHidden" data-coll="categories" data-id="${esc(c.id)}" aria-label="${c.hidden ? "Показать" : "Скрыть"}">${c.hidden ? "◌" : "●"}</button></div></div>`).join("")}
-      <p class="muted" style="font-size:12.5px">Название сохраняется, когда вы уходите из поля.</p>`;
+      ${d.categories.slice().sort((a, b) => a.sort - b.sort).map((c) => {
+        const n = d.products.filter((p) => p.cats.includes(c.id)).length;
+        return `<div class="cat-admin ${c.hidden ? "is-hidden" : ""}">
+        <label class="cat-ava" title="Сменить фото"><input type="file" accept="image/*" hidden data-cat-photo="${esc(c.id)}">${imgTag(adminCatCover(d, c), 160, "")}<b>📷</b></label>
+        <div class="cat-mid"><input class="input" style="min-height:42px" value="${esc(c.title)}" data-rename="${esc(c.id)}" aria-label="Название категории">
+          <a class="btn soft small" style="margin-top:6px" href="#/admin/cat/${esc(c.id)}">Товары · ${n}</a></div>
+        <div class="mini" style="flex-direction:column"><button data-action="move" data-coll="categories" data-id="${esc(c.id)}" data-dir="-1" aria-label="Выше">↑</button><button data-action="move" data-coll="categories" data-id="${esc(c.id)}" data-dir="1" aria-label="Ниже">↓</button>
+        <button data-action="toggleHidden" data-coll="categories" data-id="${esc(c.id)}" aria-label="${c.hidden ? "Показать" : "Скрыть"}">${c.hidden ? "◌" : "●"}</button></div></div>`;
+      }).join("")}
+      <p class="muted" style="font-size:12.5px">Нажмите на кружок, чтобы поставить своё фото. «Товары» — что лежит в категории. Название сохраняется, когда вы уходите из поля.</p>`;
+  }
+  /** One category: its picture and its products — remove, edit, add new or existing ones. */
+  function adminCategory(d, id) {
+    const c = d.categories.find((x) => x.id === id);
+    if (!c) return `<a class="btn ghost small" href="#/admin/categories">Назад к категориям</a><p class="err">Категория не найдена</p>`;
+    const all = d.products.slice().sort((a, b) => a.sort - b.sort);
+    const inCat = all.filter((p) => p.cats.includes(c.id));
+    const q = (state.admin.catSearch || "").toLowerCase().trim();
+    const others = all.filter((p) => !p.cats.includes(c.id) && (!q || p.title.toLowerCase().includes(q)));
+    const row = (p, inside) => `<div class="admin-row ${p.hidden ? "is-hidden" : ""}">${imgTag(p.images[0], 120, "")}
+      <a href="#/admin/edit/${esc(p.id)}" data-action="editFromCat" data-cat="${esc(c.id)}" style="text-decoration:none"><div class="t">${esc(p.title)}</div><div class="s">${rub(p.price)}${p.hidden ? " · скрыт" : ""}</div></a>
+      <div class="mini">${inside ? `<button data-action="catToggle" data-cat="${esc(c.id)}" data-id="${esc(p.id)}" data-on="0" aria-label="Убрать из категории">×</button>` : `<button data-action="catToggle" data-cat="${esc(c.id)}" data-id="${esc(p.id)}" data-on="1" aria-label="Добавить в категорию">+</button>`}</div></div>`;
+    return `<a class="btn ghost small" href="#/admin/categories">Назад к категориям</a>
+      <div class="cat-head">
+        <label class="cat-ava big" title="Сменить фото"><input type="file" accept="image/*" hidden data-cat-photo="${esc(c.id)}">${imgTag(adminCatCover(d, c), 240, "")}<b>📷</b></label>
+        <div><h2 class="h2" style="margin:0">${esc(c.title)}</h2>
+          <p class="muted" style="font-size:13px;margin:4px 0 0">${c.image ? "Своё фото на кружке." : "Фото кружка берём с первого товара."} Нажмите на кружок, чтобы сменить.</p>
+          ${c.image ? `<button class="btn ghost small" style="margin-top:6px" data-action="catPhotoReset" data-id="${esc(c.id)}">Убрать своё фото</button>` : ""}</div>
+      </div>
+      <button class="btn block" style="margin:14px 0 4px" data-action="newInCat" data-cat="${esc(c.id)}">+ Новый товар в эту категорию</button>
+      <h2 class="h2" style="font-size:22px">В категории · ${inCat.length}</h2>
+      ${inCat.map((p) => row(p, true)).join("") || `<p class="muted">Пока пусто — добавьте новый товар или выберите из списка ниже.</p>`}
+      <h2 class="h2" style="font-size:22px">Добавить из каталога</h2>
+      <input class="search" type="search" placeholder="Поиск товара" value="${esc(state.admin.catSearch || "")}" data-input="catSearch">
+      ${others.slice(0, 80).map((p) => row(p, false)).join("") || `<p class="muted">${q ? "Ничего не нашли." : "Все товары уже в этой категории."}</p>`}`;
   }
   function adminExtras(d) {
     return `<h2 class="h2" style="font-size:24px;margin-top:10px">Допы в корзине</h2>
@@ -1215,7 +1254,7 @@ ${d.shop && d.shop.noLevels ? "" : `      <h2 class="h2" style="font-size:22px">
     else if (a === "contacts") { html = viewContacts(); tab = "contacts"; }
     else if (a === "reviews") { html = viewReviews(); tab = "contacts"; root = false; }
     else if (a === "review") { html = viewReviewForm(); tab = "home"; }
-    else if (a === "admin") { html = viewAdmin(b === "edit" ? "edit" : b || "orders", c); tab = ""; root = b !== "edit" && b !== "customer"; }
+    else if (a === "admin") { if (b !== "edit" && b !== "cat") state.admin.fromCat = null; if (b === "cat") state.admin.fromCat = null; html = viewAdmin(b === "edit" ? "edit" : b || "orders", c); tab = ""; root = b !== "edit" && b !== "customer" && b !== "cat"; }
     else html = viewHome();
     $app.innerHTML = html;
     document.querySelectorAll(".tab").forEach((t) => t.setAttribute("aria-current", t.dataset.tab === tab ? "page" : "false"));
@@ -1438,6 +1477,16 @@ ${d.shop && d.shop.noLevels ? "" : `      <h2 class="h2" style="font-size:22px">
       const item = state.admin.data[ds.coll].find((x) => String(x.id) === ds.id);
       await adminCall(`/api/admin/item/${ds.coll}/${ds.id}`, "PUT", { hidden: !item.hidden }, state.admin.tab); return;
     }
+    if (act === "editFromCat") { state.admin.fromCat = ds.cat; return; }
+    if (act === "newInCat") { state.admin.fromCat = ds.cat; location.hash = "#/admin/edit/new"; return; }
+    if (act === "catToggle") {
+      const d = state.admin.data, p = d && d.products.find((x) => String(x.id) === String(ds.id));
+      if (!p) return;
+      const cats = ds.on === "1" ? [...new Set([...p.cats, ds.cat])] : p.cats.filter((x) => x !== ds.cat);
+      if (await adminCall(`/api/admin/item/products/${encodeURIComponent(p.id)}`, "PUT", { cats }, "cat")) { haptic(); toast(ds.on === "1" ? "Добавлено в категорию" : "Убрано из категории"); }
+      return;
+    }
+    if (act === "catPhotoReset") { if (await adminCall(`/api/admin/item/categories/${encodeURIComponent(ds.id)}`, "PUT", { image: "" }, "cat")) toast("Теперь фото берём с первого товара"); return; }
     if (act === "addCategory") { await adminCall(`/api/admin/item/categories`, "POST", { title: "Новая категория" }, "categories"); return; }
     if (act === "deleteProduct") {
       const go = () => adminCall(`/api/admin/item/products/${ds.id}`, "DELETE", null, "products").then(() => (location.hash = "#/admin/products"));
@@ -1470,6 +1519,7 @@ ${d.shop && d.shop.noLevels ? "" : `      <h2 class="h2" style="font-size:22px">
       clearTimeout(window.__st); window.__st = setTimeout(() => { const pos = ev.target.selectionStart; render(); const s = $app.querySelector('[data-input="search"]'); if (s) { s.focus(); s.setSelectionRange(pos, pos); } }, 250);
       return;
     }
+    if (k === "catSearch") { state.admin.catSearch = v; clearTimeout(window.__cts); window.__cts = setTimeout(() => { render(); const s = $app.querySelector('[data-input="catSearch"]'); if (s) { s.focus(); s.setSelectionRange(v.length, v.length); } }, 250); return; }
     if (k === "adminSearch") { state.admin.search = v; clearTimeout(window.__st); window.__st = setTimeout(() => { render(); const s = $app.querySelector('[data-input="adminSearch"]'); s.focus(); s.setSelectionRange(v.length, v.length); }, 250); return; }
     if (k === "cardText") { state.cart.cardText = v; saveCart(); return; }
     if (k === "custSearch") { state.admin.cq = v; clearTimeout(window.__cs); window.__cs = setTimeout(async () => { await loadAdmin("customers"); const s = $app.querySelector('[data-input="custSearch"]'); if (s) { s.focus(); s.setSelectionRange(v.length, v.length); } }, 350); return; }
@@ -1506,6 +1556,17 @@ ${d.shop && d.shop.noLevels ? "" : `      <h2 class="h2" style="font-size:22px">
       if (!file) return;
       toast("Загружаем фото…");
       try { const url = await uploadReviewPhoto(file); const f = rvForm(); if (f.photos.length < 3) f.photos.push(url); render(); } catch (e) { toast(e.message); }
+      return;
+    }
+    if (t.dataset.catPhoto) {
+      const file = t.files && t.files[0]; t.value = "";
+      if (!file) return;
+      toast("Загружаем фото…");
+      try {
+        const url = await uploadPhoto(file);
+        const back = state.admin.tab === "cat" ? "cat" : "categories";
+        if (await adminCall(`/api/admin/item/categories/${encodeURIComponent(t.dataset.catPhoto)}`, "PUT", { image: url }, back)) toast("Фото категории обновлено");
+      } catch (e) { toast(e.message); }
       return;
     }
     if (t.dataset.upload !== undefined || t.dataset.uploadTo) {
@@ -1545,7 +1606,7 @@ ${d.shop && d.shop.noLevels ? "" : `      <h2 class="h2" style="font-size:22px">
       };
       const id = f.dataset.id;
       const r = await adminCall(id ? `/api/admin/item/products/${id}` : `/api/admin/item/products`, id ? "PUT" : "POST", body, null);
-      if (r) { toast(id ? "Сохранено" : "Товар создан"); location.hash = "#/admin/products"; }
+      if (r) { toast(id ? "Сохранено" : "Товар создан"); location.hash = state.admin.fromCat ? "#/admin/cat/" + state.admin.fromCat : "#/admin/products"; }
     }
     if (f.dataset.form === "settings") {
       const body = {

@@ -739,7 +739,7 @@ function createApp(opts = {}) {
   }, { admin: true });
 
   const PRODUCT_FIELDS = { title: "s", short: "s", intro: "s", details: "a", images: "a", cats: "a", price: "n", oldPrice: "n?", chocolateChoices: "n", hidden: "b" };
-  const OTHER_FIELDS = { categories: { title: "s", hidden: "b" }, addons: { title: "s", price: "n", hidden: "b" } };
+  const OTHER_FIELDS = { categories: { title: "s", hidden: "b", image: "img" }, addons: { title: "s", price: "n", hidden: "b" } };
   function pick(body, spec) {
     const out = {};
     for (const [k, t] of Object.entries(spec)) {
@@ -750,6 +750,8 @@ function createApp(opts = {}) {
       if (t === "n?") out[k] = v ? Math.max(0, Math.round(Number(v) || 0)) || null : null;
       if (t === "b") out[k] = !!v;
       if (t === "a") out[k] = (Array.isArray(v) ? v : []).map((x) => String(x).trim().slice(0, 500)).filter(Boolean).slice(0, 30);
+      // a category's own picture (the circle on the home page); "" — take the first product's photo
+      if (t === "img") { const u = String(v || "").trim(); if (u && !okImage(u)) throw httpError(400, "Фото не подошло — загрузите его ещё раз"); out[k] = u; }
     }
     if (out.images) out.images = out.images.filter(okImage);
     return out;
