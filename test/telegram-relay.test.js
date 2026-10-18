@@ -53,3 +53,32 @@ test("without TELEGRAM_API_URL the bot talks to Telegram directly, as before", (
   const src = require("fs").readFileSync(require.resolve("../server/telegram.js"), "utf8");
   assert.match(src, /https:\/\/api\.telegram\.org/);
 });
+
+test("shop front door abroad: pages, API with the customer's signature, uploads and redirects go to the shop in Russia", async (t) => {
+  const seen = [];
+  const shop = http.createServer(async (req, res) => {
+    const chunks = []; for await (const c of req) chunks.push(c);
+    seen.push({ method: req.method, url: req.url, init: req.headers["x-init-data"], ip: req.headers["x-forwarded-for"], size: Buffer.concat(chunks).length, type: req.headers["content-type"] });
+    if (req.url === "/old") { res.writeHead(302, { Location: "/new" }); return res.end(); }
+    if (req.url.startsWith("/api/")) { res.writeHead(200, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ ok: true })); }
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache" }); res.end("<title>Gagulya</title>");
+  });
+  const shopUrl = await listen(shop);
+  const front = createRelay({ key: "", shop: shopUrl, target: shopUrl }); const frontUrl = await listen(front);
+  t.after(() => { shop.close(); front.close(); });
+  const page = await fetch(frontUrl + "/?start=rv_1#x");
+  assert.equal(page.status, 200); assert.match(await page.text(), /Gagulya/);
+  assert.equal(seen[0].url, "/?start=rv_1");
+  const api = await fetch(frontUrl + "/api/orders", { method: "POST", headers: { "Content-Type": "application/json", "X-Init-Data": "sig", "X-Forwarded-For": "1.2.3.4" }, body: JSON.stringify({ a: 1 }) });
+  assert.deepEqual(await api.json(), { ok: true });
+  const s = seen.find((x) => x.url === "/api/orders");
+  assert.equal(s.init, "sig"); assert.equal(s.ip, "1.2.3.4"); assert.equal(s.size, 7);
+  const up = await fetch(frontUrl + "/api/admin/upload", { method: "POST", headers: { "Content-Type": "image/png" }, body: Buffer.alloc(300000, 1) });
+  assert.equal(up.status, 200); assert.equal(seen.at(-1).size, 300000);
+  const r = await fetch(frontUrl + "/old", { redirect: "manual" }); assert.equal(r.status, 302); assert.equal(r.headers.get("location"), "/new");
+  const h = await (await fetch(frontUrl + "/__relay")).json();
+  assert.equal(h.shop, "магазин в России доступен");
+  // the shop is down → a clear page, not a grey screen
+  shop.close(); await new Promise((r) => setTimeout(r, 50));
+  const down = await fetch(frontUrl + "/"); assert.equal(down.status, 502); assert.match(await down.text(), /временно недоступен/);
+});
