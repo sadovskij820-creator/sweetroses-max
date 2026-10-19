@@ -857,11 +857,13 @@
     else if (d) body = ({ cat: adminCategory, pay: adminTransfer, staff: adminStaff, orders: adminOrders, products: adminProducts, categories: adminCategories, extras: adminExtras, settings: adminSettings, stats: adminStats, edit: adminEdit, customers: adminCustomers, customer: adminCustomer, broadcast: adminBroadcast, loyalty: adminLoyalty, promo: adminPromo, reviews: adminReviews }[tab] || adminOrders)(d, arg);
     return `<div class="page"><h1 class="display" style="font-size:34px;margin-top:8px">Управление</h1>${tab === "edit" || tab === "customer" || tab === "cat" ? "" : adminTabs(tab)}${body}</div>`;
   }
+  // the receipt right in the order card: a picture, tap → full screen
+  const receiptThumb = (o) => o.receipt ? `<button class="receipt-thumb" data-action="viewReceipt" data-url="${esc(o.receipt)}" aria-label="Открыть чек">${imgTag(o.receipt, 240, "Чек")}<span>Чек · нажмите, чтобы открыть</span></button>` : "";
   function payBadge(o) {
     if (o.payMethod !== "transfer") return "";
-    if (o.paid) return `<div class="pay-badge ok">✅ Оплата получена (перевод)${o.receipt ? ` · <a href="${esc(o.receipt)}" data-ext>чек</a>` : ""}</div>`;
+    if (o.paid) return `<div class="pay-badge ok">✅ Оплата получена (перевод)</div>${receiptThumb(o)}`;
     if (o.awaitReceipt) return `<div class="pay-badge wait">⏳ Ждём оплату и чек от клиента${o.receiptNudged ? " — больше 30 минут, позвоните" : ""}</div>`;
-    if (o.receipt) return `<div class="pay-badge claim">💳 Клиент прикрепил чек — <a href="${esc(o.receipt)}" data-ext>открыть чек</a>. Проверьте поступление в банке</div>`;
+    if (o.receipt) return `<div class="pay-badge claim">💳 Клиент прикрепил чек. Проверьте поступление в банке и нажмите «Оплата получена»</div>${receiptThumb(o)}`;
     if (o.transferClaimedAt) return `<div class="pay-badge claim">💳 Клиент сообщил об оплате ${ddmm(o.transferClaimedAt)} в ${new Intl.DateTimeFormat("ru-RU", { timeZone: TZ, hour: "2-digit", minute: "2-digit" }).format(new Date(o.transferClaimedAt))} — проверьте в банке</div>`;
     return `<div class="pay-badge wait">💳 Перевод: ${o.transferMode === "after" ? "реквизиты уйдут клиенту после «В работе»" : "ждём оплату"}</div>`;
   }
@@ -1387,6 +1389,7 @@ ${d.shop && d.shop.noLevels ? "" : `      <h2 class="h2" style="font-size:22px">
     }
     if (act === "sheetGo") { closeOverlay(); location.hash = "#/checkout"; return; }
     if (act === "closeOverlay") { closeOverlay(); return; }
+    if (act === "viewReceipt") { showViewer([ds.url], 0); return; }
     if (act === "applyPromo") {
       const code = state.promo.code.trim();
       if (!code) return;
