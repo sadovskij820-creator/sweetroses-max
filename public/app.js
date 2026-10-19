@@ -449,7 +449,9 @@
     if (!state.cart.lines.length) { location.hash = "#/cart"; return ""; }
     const c = initCheckout();
     const minDate = cartMinDate();
-    if (c.date < minDate) c.date = minDate;
+    // a product «будет с …» in the cart: the date is NOT filled in for the customer — he picks it himself and sees the limit
+    if (minDate > todayISO(0) && !c.datePicked) c.date = "";
+    const soonLines = state.cart.lines.map((l) => productById(l.id)).filter((p) => availDate(p));
     const t = totals(c);
     const e = c.errors;
     const slots = slotsFor(c.date, c);
@@ -469,7 +471,7 @@
       ${c.method === "delivery" ? zonePicker(c, e) : ""}
       ${c.method === "delivery" ? `<label class="field"><span>Адрес доставки</span><input class="input ${e.address ? "invalid" : ""}" data-input="co.address" value="${esc(c.address)}" placeholder="Улица, дом, квартира, подъезд" autocomplete="street-address">${e.address ? `<div class="err">${e.address}</div>` : ""}</label>` : ""}
 
-      <label class="field"><span>${SHOP().timeText ? "Дата" : "Дата готовности"}</span><input class="input" type="date" data-input="co.date" value="${esc(c.date)}" min="${minDate}" max="${minDate > todayISO(60) ? minDate : todayISO(60)}">${minDate > todayISO(0) ? `<div class="muted" style="font-size:13px;margin-top:6px">В корзине есть товар, которого пока нет в наличии, — заказ возможен с ${dmISO(minDate)}.</div>` : ""}</label>
+      <label class="field"><span>${SHOP().timeText ? "Дата" : "Дата готовности"}</span>${soonLines.length ? `<div class="soon-box" style="margin:6px 0 8px">${soonLines.map((p) => `${esc(p.title)} — нет в наличии, <b>будет с ${dmISO(availDate(p))}</b>`).join("<br>")}.<br>Выберите дату <b>не раньше ${dmISO(minDate)}</b>.</div>` : ""}<input class="input ${e.date ? "invalid" : ""}" type="date" data-input="co.date" value="${esc(c.date)}" min="${minDate}" max="${minDate > todayISO(60) ? minDate : todayISO(60)}">${e.date ? `<div class="err">${e.date}</div>` : ""}</label>
       ${SHOP().timeText ? timeTextField(c, e) : `<div class="field"><span>Время готовности</span>
         <div class="slots">${slots.map((x) => `<button class="slot" data-action="slot" data-t="${x.s}" aria-pressed="${c.time === x.s}" ${x.disabled ? "disabled" : ""}>${x.s}</button>`).join("")}</div>
         ${e.time ? `<div class="err">${e.time}</div>` : ""}
@@ -1623,7 +1625,13 @@ ${d.shop && d.shop.noLevels ? "" : `      <h2 class="h2" style="font-size:22px">
       const f = k.slice(3);
       initCheckout()[f] = v;
       if (state.checkout.errors[f]) { delete state.checkout.errors[f]; }
-      if (f === "date" && !SHOP().timeText) { state.checkout.time = ""; fixSlot(); render(); }
+      if (f === "date") {
+        state.checkout.datePicked = true;
+        const md = cartMinDate();
+        if (v && v < md) state.checkout.errors.date = `Нельзя раньше ${dmISO(md)} — этого товара до этой даты нет в наличии`;
+        if (!SHOP().timeText) { state.checkout.time = ""; fixSlot(); }
+        render();
+      }
       if (f === "consent" || f === "useBonus" || f === "marketing" || f === "isGift") render();
     }
   });
@@ -1811,7 +1819,9 @@ ${d.shop && d.shop.noLevels ? "" : `      <h2 class="h2" style="font-size:22px">
   }
   function validate(c) {
     const e = {};
-    if (c.date < cartMinDate()) c.date = cartMinDate();
+    const md = cartMinDate();
+    if (!c.date) e.date = "Выберите дату";
+    else if (c.date < md) e.date = `Нельзя раньше ${dmISO(md)} — этого товара до этой даты нет в наличии`;
     if (c.name.trim().length < 2) e.name = "Укажите имя, чтобы менеджер знал, как к вам обращаться";
     const digits = c.phone.replace(/\D/g, "");
     if (digits.length < 10 || digits.length > 12) e.phone = "Проверьте номер: нужно 10–11 цифр, например +7 900 000-00-00";
