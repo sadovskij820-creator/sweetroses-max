@@ -111,7 +111,8 @@
   }
 
   /* ---------------- catalog helpers ---------------- */
-  const visibleProducts = () => state.catalog.products.filter((p) => !p.hidden).sort((a, b) => a.sort - b.sort);
+  // products «нет в наличии, будет с …» go to the end of every list a customer sees (Gagulya, 19.10.2026)
+  const visibleProducts = () => state.catalog.products.filter((p) => !p.hidden).sort((a, b) => (availDate(a) ? 1 : 0) - (availDate(b) ? 1 : 0) || a.sort - b.sort);
   const visibleCats = () => state.catalog.categories.filter((c) => !c.hidden).sort((a, b) => a.sort - b.sort);
   const productById = (id) => state.catalog.products.find((p) => String(p.id) === String(id));
   function catCover(catId) {
@@ -341,6 +342,18 @@
     el.id = id; el.className = "overlay " + (cls || ""); el.innerHTML = html;
     document.body.appendChild(el); document.body.classList.add("no-scroll");
     return el;
+  }
+  /**
+   * «Да / Нет» that works in both messengers: MAX blocks the browser's confirm() (the button just did nothing),
+   * so we draw our own small window. Telegram keeps its native one.
+   */
+  function askConfirm(text, onYes, yesLabel) {
+    if (tg && tg.showConfirm && !tg.standIn) { tg.showConfirm(text, (yes) => yes && onYes()); return; }
+    state.confirmYes = onYes;
+    overlay("confirmBox", `<div class="sheet-bg" data-action="closeOverlay"></div><div class="sheet confirm-sheet">
+      <p style="font-size:16px;line-height:1.45;margin:6px 0 16px">${esc(text)}</p>
+      <div style="display:flex;gap:10px"><button class="btn ghost" style="flex:1" data-action="closeOverlay">Отмена</button>
+      <button class="btn danger" style="flex:1" data-action="confirmYes">${esc(yesLabel || "Да, удалить")}</button></div></div>`, "sheet-wrap");
   }
   function closeOverlay() { document.querySelectorAll(".overlay").forEach((x) => x.remove()); document.body.classList.remove("no-scroll"); }
   function showAddonSheet() {
@@ -1409,6 +1422,7 @@ ${d.shop && d.shop.noLevels ? "" : `      <h2 class="h2" style="font-size:22px">
     }
     if (act === "sheetGo") { closeOverlay(); location.hash = "#/checkout"; return; }
     if (act === "closeOverlay") { closeOverlay(); return; }
+    if (act === "confirmYes") { const f = state.confirmYes; state.confirmYes = null; closeOverlay(); if (f) await f(); return; }
     if (act === "viewReceipt") { showViewer([ds.url], 0); return; }
     if (act === "applyPromo") {
       const code = state.promo.code.trim();
@@ -1435,7 +1449,7 @@ ${d.shop && d.shop.noLevels ? "" : `      <h2 class="h2" style="font-size:22px">
     if (act === "orderPaid") {
       const go = () => adminCall(`/api/admin/orders/${ds.id}`, "PATCH", { paid: true }, "orders").then((r) => r && toast("Отмечено: оплата получена"));
       const q = `Деньги за заказ №${ds.id} пришли? Клиенту придёт сообщение «Оплата получена».`;
-      if (tg && tg.showConfirm) tg.showConfirm(q, (yes) => yes && go()); else if (window.confirm(q)) go();
+      askConfirm(q, go);
       return;
     }
     if (act === "staffInvite") {
@@ -1448,7 +1462,7 @@ ${d.shop && d.shop.noLevels ? "" : `      <h2 class="h2" style="font-size:22px">
     if (act === "staffRemove") {
       const go = () => adminCall(`/api/admin/staff/${ds.id}`, "DELETE", null, "staff").then((r) => r && toast("Доступ закрыт"));
       const q = `Убрать ${ds.name} из сотрудников? Доступ к управлению и заявкам пропадёт сразу.`;
-      if (tg && tg.showConfirm) tg.showConfirm(q, (yes) => yes && go()); else if (window.confirm(q)) go();
+      askConfirm(q, go);
       return;
     }
     if (act === "inviteDel") { await adminCall(`/api/admin/staff/invite/${ds.code}`, "DELETE", null, "staff"); return; }
@@ -1534,7 +1548,7 @@ ${d.shop && d.shop.noLevels ? "" : `      <h2 class="h2" style="font-size:22px">
     }
     if (act === "delSource") {
       const list = (state.admin.data.sources || []).filter((x) => x.slug !== ds.slug).map((x) => ({ title: x.title, slug: x.slug }));
-      if (window.confirm("Удалить ссылку? Статистика по ней пропадёт из списка.")) await adminCall("/api/admin/sources", "PUT", { sources: list }, "promo");
+      askConfirm("Удалить ссылку? Статистика по ней пропадёт из списка.", () => adminCall("/api/admin/sources", "PUT", { sources: list }, "promo"));
       return;
     }
     if (act === "rvStar") { const f = rvForm(); f.rating = +ds.n; f.err = ""; haptic(); render(); return; }
@@ -1551,7 +1565,7 @@ ${d.shop && d.shop.noLevels ? "" : `      <h2 class="h2" style="font-size:22px">
     if (act === "rvDel") {
       const go = () => adminCall(`/api/admin/reviews/${ds.id}`, "DELETE", null, "reviews").then((r) => { if (r) { toast("Отзыв удалён"); state.reviewsList = null; } });
       const q = "Удалить отзыв насовсем?";
-      if (tg && tg.showConfirm) tg.showConfirm(q, (yes) => yes && go()); else if (window.confirm(q)) go();
+      askConfirm(q, go);
       return;
     }
     if (act === "copyText") { try { await navigator.clipboard.writeText(ds.text); toast("Скопировано"); } catch (e) { toast(ds.text); } return; }
@@ -1579,15 +1593,14 @@ ${d.shop && d.shop.noLevels ? "" : `      <h2 class="h2" style="font-size:22px">
     if (act === "addonDel") {
       const go = () => adminCall(`/api/admin/item/addons/${encodeURIComponent(ds.id)}`, "DELETE", null, "extras");
       const q = "Удалить доп? Можно вместо этого скрыть его кнопкой ●.";
-      if (tg && tg.showConfirm) tg.showConfirm(q, (yes) => yes && go()); else if (window.confirm(q)) go();
+      askConfirm(q, go);
       return;
     }
     if (act === "addCategory") { await adminCall(`/api/admin/item/categories`, "POST", { title: "Новая категория" }, "categories"); return; }
     if (act === "deleteProduct") {
       const go = () => adminCall(`/api/admin/item/products/${ds.id}`, "DELETE", null, "products").then(() => (location.hash = "#/admin/products"));
       const q = "Удалить товар без возможности восстановления? Можно вместо этого скрыть его.";
-      if (tg && tg.showConfirm) tg.showConfirm(q, (yes) => yes && go());
-      else if (window.confirm(q)) go();
+      askConfirm(q, go);
       return;
     }
     if (act === "importSite") {
@@ -1763,9 +1776,11 @@ ${d.shop && d.shop.noLevels ? "" : `      <h2 class="h2" style="font-size:22px">
     }
     if (f.dataset.form === "broadcast") {
       const seg = state.admin.bseg || "all";
-      if (!window.confirm("Отправить рассылку?")) return;
-      const r = await adminCall("/api/admin/broadcast", "POST", { segment: seg, text: fd.get("text"), button: fd.get("button") === "on" }, null);
-      if (r) { toast(`Отправляем ${r.count} клиентам`); setTimeout(() => loadAdmin("broadcast"), 1500); }
+      const text = fd.get("text"), button = fd.get("button") === "on";
+      askConfirm("Отправить рассылку?", async () => {
+        const r = await adminCall("/api/admin/broadcast", "POST", { segment: seg, text, button }, null);
+        if (r) { toast(`Отправляем ${r.count} клиентам`); setTimeout(() => loadAdmin("broadcast"), 1500); }
+      }, "Отправить");
       return;
     }
     if (f.dataset.form === "loyalty") {
