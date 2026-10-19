@@ -62,6 +62,14 @@ function buildOrder({ catalog, orders, body, tgUser, now = new Date() }) {
     return { error: "К этому времени доставка в ваш район уже не успеет. Выберите время позже или другую дату." };
   }
   if (!totals.lines.length) return { error: "Корзина пуста" };
+  // «нет в наличии, будет с …»: such a product can be ordered only for that date or later (Gagulya, 19.10.2026)
+  for (const l of totals.lines) {
+    const p = (catalog.products || []).find((x) => String(x.id) === String(l.id));
+    if (p && p.availFrom && p.availFrom > todayISO(now) && customer.date < p.availFrom) {
+      const [, m, d] = p.availFrom.split("-");
+      return { error: `«${p.title}» будет в наличии с ${d}.${m}. Выберите дату не раньше ${d}.${m}.` };
+    }
+  }
   if (totals.promoError) return { error: totals.promoError + ". Уберите промокод в корзине и отправьте заявку ещё раз." };
   const cardText = cart.addons && cart.addons.card ? str(cart.cardText, 300) : "";
   const order = {

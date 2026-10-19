@@ -743,7 +743,7 @@ function createApp(opts = {}) {
     return { ok: true };
   }, { admin: true });
 
-  const PRODUCT_FIELDS = { title: "s", short: "s", intro: "s", details: "a", images: "a", cats: "a", price: "n", oldPrice: "n?", chocolateChoices: "n", hidden: "b" };
+  const PRODUCT_FIELDS = { title: "s", short: "s", intro: "s", details: "a", images: "a", cats: "a", price: "n", oldPrice: "n?", chocolateChoices: "n", hidden: "b", availFrom: "date?" };
   const OTHER_FIELDS = { categories: { title: "s", hidden: "b", image: "img" }, addons: { title: "s", price: "n", hidden: "b", image: "img", text: "s" } };
   function pick(body, spec) {
     const out = {};
@@ -751,6 +751,7 @@ function createApp(opts = {}) {
       if (!(k in body)) continue;
       const v = body[k];
       if (t === "s") out[k] = String(v || "").trim().slice(0, 2000);
+      if (t === "date?") out[k] = /^\d{4}-\d{2}-\d{2}$/.test(String(v || "")) ? String(v) : "";
       if (t === "n") out[k] = Math.max(0, Math.round(Number(v) || 0));
       if (t === "n?") out[k] = v ? Math.max(0, Math.round(Number(v) || 0)) || null : null;
       if (t === "b") out[k] = !!v;

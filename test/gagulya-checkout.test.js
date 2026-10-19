@@ -152,3 +152,22 @@ test("the «pay and attach the receipt» button opens the payment page of that v
   // the order also shows up in the customer's profile as waiting (the banner on the home page and the cart)
   assert.ok((await req(url + "/api/profile", "GET", null, user(501))).data.orders.some((o) => o.id === r.data.id && o.awaitReceipt));
 });
+
+test("«нет в наличии, будет с …»: the product stays visible, can be ordered only for that date or later", async (t) => {
+  const { app, url } = await start(); t.after(() => app.server.close());
+  const admin = tg.signInitData({ id: 100, first_name: "Гагуля" }, TOKEN);
+  const in3 = todayISO(new Date(Date.now() + 3 * 864e5)), in1 = todayISO(new Date(Date.now() + 864e5));
+  const r = await req(url + `/api/admin/item/products/${P1.id}`, "PUT", { availFrom: in3 }, admin);
+  assert.equal(r.data.availFrom, in3);
+  assert.equal((await req(url + `/api/admin/item/products/${P1.id}`, "PUT", { availFrom: "завтра" }, admin)).data.availFrom, "");
+  await req(url + `/api/admin/item/products/${P1.id}`, "PUT", { availFrom: in3 }, admin);
+  const cat = (await req(url + "/api/catalog", "GET")).data;
+  assert.ok(cat.products.some((p) => p.id === P1.id && p.availFrom === in3), "visible to customers with the date");
+  const early = await req(url + "/api/orders", "POST", order(customer({ date: in1 })), user(601));
+  assert.equal(early.status, 400); assert.match(early.data.error, /будет в наличии с/);
+  const ok = await req(url + "/api/orders", "POST", order(customer({ date: in3 })), user(601));
+  assert.equal(ok.status, 200);
+  // cleared → orderable today again
+  await req(url + `/api/admin/item/products/${P1.id}`, "PUT", { availFrom: "" }, admin);
+  assert.equal((await req(url + "/api/orders", "POST", order(customer()), user(602))).status, 200);
+});

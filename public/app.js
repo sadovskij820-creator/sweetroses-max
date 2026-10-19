@@ -220,9 +220,19 @@
   }
 
   /* ---------------- views ---------------- */
+  // «нет в наличии, будет с …» — the date while it is still ahead, otherwise ""
+  const availDate = (p) => (p && p.availFrom && p.availFrom > todayISO(0) ? p.availFrom : "");
+  const dmISO = (iso) => iso.slice(8, 10) + "." + iso.slice(5, 7);
+  const soonBadge = (p) => (availDate(p) ? `<span class="soon">Будет с ${dmISO(availDate(p))}</span>` : "");
+  /** The earliest date the whole cart can be ordered for. */
+  function cartMinDate() {
+    let d = todayISO(0);
+    for (const l of state.cart.lines) { const a = availDate(productById(l.id)); if (a > d) d = a; }
+    return d;
+  }
   function productCard(p) {
     return `<div class="card">
-      <div class="ph"><a href="#/p/${esc(p.id)}" style="display:block;height:100%" aria-label="${esc(p.title)}">${imgTag(p.images[0], 480, p.title)}</a>
+      <div class="ph">${soonBadge(p)}<a href="#/p/${esc(p.id)}" style="display:block;height:100%" aria-label="${esc(p.title)}">${imgTag(p.images[0], 480, p.title)}</a>
       <button class="add glass" data-action="quickAdd" data-id="${esc(p.id)}" aria-label="Добавить «${esc(p.title)}» в корзину">
         <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button></div>
       <a href="#/p/${esc(p.id)}" style="text-decoration:none"><h3>${esc(p.title)}</h3>
@@ -306,6 +316,7 @@
       ${state.start.hint && String(state.start.productId) === String(p.id) ? `<div class="hint-banner">💝 <b>${esc(state.start.fromName || "Вам")}</b> ${state.start.fromName ? "намекает" : "намекают"}: очень хочется именно этот подарок</div>` : ""}
       <h1 class="product-title">${esc(p.title)}</h1>
       <div class="product-price price">${rub(p.price)}${p.oldPrice ? `<span class="old-price">${rub(p.oldPrice)}</span>` : ""}</div>
+      ${availDate(p) ? `<div class="soon-box">Сейчас нет в наличии — <b>будет с ${dmISO(availDate(p))}</b>. Можно заказать на эту дату или позже.</div>` : ""}
       <p class="muted" style="margin:10px 0 0">${esc(p.intro || p.short)}</p>
       ${need ? `<div class="choc-title">Шоколад: выберите до ${need === 1 ? "одного вида" : need + " видов"}</div>
         <div class="muted" style="font-size:13px">Если не выберете, менеджер уточнит при подтверждении.</div>
@@ -369,6 +380,7 @@
         return `<div class="line">${imgTag(p.images[0], 200, p.title)}<div>
           <h4>${esc(p.title)}</h4>
           ${l.choc && l.choc.length ? `<div class="sub">Шоколад: ${esc(l.choc.join(", "))}</div>` : ""}
+          ${availDate(p) ? `<div class="sub" style="color:#9a6a00">Будет с ${dmISO(availDate(p))} — заказ на эту дату или позже</div>` : ""}
           <div class="row"><div class="stepper"><button data-action="lineQty" data-i="${i}" data-d="-1" aria-label="Меньше">−</button><span>${l.qty}</span><button data-action="lineQty" data-i="${i}" data-d="1" aria-label="Больше">+</button></div>
           <b class="price">${rub(p.price * l.qty)}</b></div></div></div>`;
       }).join("")}
@@ -436,6 +448,8 @@
   function viewCheckout() {
     if (!state.cart.lines.length) { location.hash = "#/cart"; return ""; }
     const c = initCheckout();
+    const minDate = cartMinDate();
+    if (c.date < minDate) c.date = minDate;
     const t = totals(c);
     const e = c.errors;
     const slots = slotsFor(c.date, c);
@@ -455,7 +469,7 @@
       ${c.method === "delivery" ? zonePicker(c, e) : ""}
       ${c.method === "delivery" ? `<label class="field"><span>Адрес доставки</span><input class="input ${e.address ? "invalid" : ""}" data-input="co.address" value="${esc(c.address)}" placeholder="Улица, дом, квартира, подъезд" autocomplete="street-address">${e.address ? `<div class="err">${e.address}</div>` : ""}</label>` : ""}
 
-      <label class="field"><span>${SHOP().timeText ? "Дата" : "Дата готовности"}</span><input class="input" type="date" data-input="co.date" value="${esc(c.date)}" min="${todayISO(0)}" max="${todayISO(60)}"></label>
+      <label class="field"><span>${SHOP().timeText ? "Дата" : "Дата готовности"}</span><input class="input" type="date" data-input="co.date" value="${esc(c.date)}" min="${minDate}" max="${minDate > todayISO(60) ? minDate : todayISO(60)}">${minDate > todayISO(0) ? `<div class="muted" style="font-size:13px;margin-top:6px">В корзине есть товар, которого пока нет в наличии, — заказ возможен с ${dmISO(minDate)}.</div>` : ""}</label>
       ${SHOP().timeText ? timeTextField(c, e) : `<div class="field"><span>Время готовности</span>
         <div class="slots">${slots.map((x) => `<button class="slot" data-action="slot" data-t="${x.s}" aria-pressed="${c.time === x.s}" ${x.disabled ? "disabled" : ""}>${x.s}</button>`).join("")}</div>
         ${e.time ? `<div class="err">${e.time}</div>` : ""}
@@ -890,7 +904,7 @@
       ${d.settings.tildaParts ? `<button class="btn soft small" data-action="importSite">Обновить с сайта</button>` : ""}</div>
       <input class="search" type="search" placeholder="Поиск товара" value="${esc(state.admin.search)}" data-input="adminSearch">
       ${list.map((p) => `<div class="admin-row ${p.hidden ? "is-hidden" : ""}">${imgTag(p.images[0], 120, "")}
-        <a href="#/admin/edit/${esc(p.id)}" style="text-decoration:none"><div class="t">${esc(p.title)}</div><div class="s">${rub(p.price)}${p.hidden ? " · скрыт" : ""}</div></a>
+        <a href="#/admin/edit/${esc(p.id)}" style="text-decoration:none"><div class="t">${esc(p.title)}</div><div class="s">${rub(p.price)}${p.hidden ? " · скрыт" : ""}${availDate(p) ? ` · будет с ${dmISO(availDate(p))}` : ""}</div></a>
         <div class="mini"><button data-action="move" data-coll="products" data-id="${esc(p.id)}" data-dir="-1" aria-label="Выше">↑</button><button data-action="move" data-coll="products" data-id="${esc(p.id)}" data-dir="1" aria-label="Ниже">↓</button>
         <button data-action="toggleHidden" data-coll="products" data-id="${esc(p.id)}" aria-label="${p.hidden ? "Показать" : "Скрыть"}">${p.hidden ? "◌" : "●"}</button></div></div>`).join("")}`;
   }
@@ -915,6 +929,10 @@
           <div style="display:flex;gap:8px;margin-top:8px"><input class="input" data-photo-link placeholder="https://…" style="min-height:42px"><button type="button" class="btn soft small" data-action="addPhotoLink">Добавить</button></div></details>
       </div>
       ${(d.chocolates || []).length ? `<label class="field"><span>Сколько видов шоколада можно выбрать (0 — без выбора)</span><input class="input" name="chocolateChoices" type="number" min="0" max="6" value="${p.chocolateChoices || 0}"></label>` : `<input type="hidden" name="chocolateChoices" value="0">`}
+      <div class="field soon-field"><span>Наличие</span>
+        <label class="check" style="margin:4px 0 8px"><input type="checkbox" name="inStock" value="soon" ${availDate(p) ? "checked" : ""}><span>Сейчас нет в наличии — покупатель видит товар, но заказать может только с даты ниже</span></label>
+        <input class="input" type="date" name="availFrom" value="${esc(availDate(p))}" min="${todayISO(1)}" aria-label="Будет в наличии с">
+        <div class="muted" style="font-size:12.5px;margin-top:6px">Когда дата наступит, пометка «Будет с …» исчезнет сама. Чтобы совсем убрать товар — кнопка «Скрыть».</div></div>
       <div class="field"><span>Категории</span>${d.categories.map((c) => `<label class="check" style="margin-top:8px;color:var(--text)"><input type="checkbox" name="cats" value="${esc(c.id)}" ${p.cats.includes(c.id) ? "checked" : ""}>${esc(c.title)}</label>`).join("")}</div>
       <label class="check" style="color:var(--text)"><input type="checkbox" name="hidden" ${p.hidden ? "checked" : ""}>Скрыть из каталога</label>
       <button class="btn block" style="margin-top:18px" type="submit">${isNew ? "Создать товар" : "Сохранить изменения"}</button>
@@ -1690,7 +1708,9 @@ ${d.shop && d.shop.noLevels ? "" : `      <h2 class="h2" style="font-size:22px">
         oldPrice: parseInt(fd.get("oldPrice"), 10) || null, short: fd.get("short").trim(), intro: fd.get("intro").trim(),
         details: lines(fd.get("details")), images: [...f.querySelectorAll("[data-photos] .photo-tile[data-url]")].map((x) => x.dataset.url), cats: fd.getAll("cats"),
         chocolateChoices: Math.max(0, Math.min(6, parseInt(fd.get("chocolateChoices"), 10) || 0)), hidden: fd.get("hidden") === "on",
+        availFrom: fd.get("inStock") === "soon" ? String(fd.get("availFrom") || "") : "",
       };
+      if (fd.get("inStock") === "soon" && !body.availFrom) { toast("Укажите, с какого числа товар будет в наличии"); return; }
       const id = f.dataset.id;
       const r = await adminCall(id ? `/api/admin/item/products/${id}` : `/api/admin/item/products`, id ? "PUT" : "POST", body, null);
       if (r) { toast(id ? "Сохранено" : "Товар создан"); location.hash = state.admin.fromCat ? "#/admin/cat/" + state.admin.fromCat : "#/admin/products"; }
@@ -1791,6 +1811,7 @@ ${d.shop && d.shop.noLevels ? "" : `      <h2 class="h2" style="font-size:22px">
   }
   function validate(c) {
     const e = {};
+    if (c.date < cartMinDate()) c.date = cartMinDate();
     if (c.name.trim().length < 2) e.name = "Укажите имя, чтобы менеджер знал, как к вам обращаться";
     const digits = c.phone.replace(/\D/g, "");
     if (digits.length < 10 || digits.length > 12) e.phone = "Проверьте номер: нужно 10–11 цифр, например +7 900 000-00-00";
