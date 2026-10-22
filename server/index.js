@@ -130,9 +130,12 @@ function createApp(opts = {}) {
   const custDb = () => store.getCustomers();
   const customers = {
     touch(user, startParam = "", now = new Date()) {
+      const isNew = !custDb().list[String(user.id)];
       const c = LY.touchCustomer(custDb(), user, { now, settings: loyal(), startParam, giftExists: (g) => !!findGift(g) });
       if (user && user.platform && user.platform !== messenger) c.platform = user.platform; else if (user && user.platform && c.platform) delete c.platform;
-      store.saveCustomers(); return c;
+      // a visit is saved within 2 s (store.js); whoever changes bonuses/orders after touch() saves at once anyway
+      if (isNew) store.saveCustomers(); else store.saveCustomersSoon(); // a new person (welcome bonus, invite) — at once
+      return c;
     },
     get: (id) => custDb().list[String(id)] || null,
     addBonus(c, amount, kind, o = {}) { const lot = LY.addBonus(c, amount, kind, Object.assign({ days: loyal().burnDays }, o)); store.saveCustomers(); return lot; },
