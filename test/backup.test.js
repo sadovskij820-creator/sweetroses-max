@@ -144,3 +144,30 @@ test("MAX: a file goes via an upload slot and is retried while «not ready»", a
   assert.deepEqual(msg[2].body.attachments, [{ type: "file", payload: { token: "FILE-TOKEN" } }]);
   assert.match(msg[2].p, /user_id=77/);
 });
+
+test("a copy too big for the chat (413) is sent in parts; all parts together restore everything", async (t) => {
+  const fs2 = require("fs"), os2 = require("os"), path2 = require("path");
+  const BK = require("../server/backup");
+  const { createApp } = require("../server/index");
+  const dataDir = fs2.mkdtempSync(path2.join(os2.tmpdir(), "bk413-"));
+  fs2.mkdirSync(path2.join(dataDir, "uploads"), { recursive: true });
+  for (let i = 0; i < 10; i++) fs2.writeFileSync(path2.join(dataDir, "uploads", (i.toString(16).padStart(2, "0") + "a".repeat(22)) + ".jpg"), require("crypto").randomBytes(900000));
+  const docs = [];
+  const bot = { sendMessage: async () => {}, sendPhotos: async () => {}, openButton: () => null, getUsername: () => "b", setWebAppUrl() {},
+    sendDocument: async (chat, buf, name, cap) => { if (buf.length > 3e6) throw new Error("Telegram sendDocument: 413"); docs.push({ buf, name, cap }); } };
+  const app = createApp({ messenger: "telegram", botToken: "1:x", bot, adminIds: "100", dataDir, seedFile: path2.join(__dirname, "..", "seed", "gagulya.seed.json"), log: { error() {}, log() {} }, noBackup: true });
+  app.onBotStart({ id: 100, first_name: "Илья" }, "", "telegram");
+  process.env.BACKUP_CHAT_IDS = "100";
+  let r; try { r = await app.runBackup({ full: true }); } finally { delete process.env.BACKUP_CHAT_IDS; }
+  assert.equal(r.error, ""); assert.equal(r.sentTo, 1);
+  assert.ok(docs.length >= 4, "sent in several parts: " + docs.length);
+  assert.ok(docs.every((d) => d.buf.length <= 3e6));
+  assert.match(docs[0].cap, /частями/); assert.match(docs[1].name, /part2of/);
+  // restore all parts into an empty folder → all 10 photos and the data are back
+  const fresh = fs2.mkdtempSync(path2.join(os2.tmpdir(), "bk413r-"));
+  docs.forEach((d, i) => fs2.writeFileSync(path2.join(fresh, `restore-${i + 1}.zip`), d.buf));
+  const done = BK.restoreOnStart(fresh, { log() {}, error() {} });
+  assert.equal(done.length, docs.length);
+  assert.equal(fs2.readdirSync(path2.join(fresh, "uploads")).length, 10);
+  assert.ok(fs2.existsSync(path2.join(fresh, "catalog.json")));
+});

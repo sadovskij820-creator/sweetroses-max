@@ -93,10 +93,36 @@ const RESTORE_HELP = [
   "1. Amvera → ваш проект → «Репозиторий» → вкладка «Data» → «Загрузить данные».",
   "2. Загрузите этот ZIP-файл как есть (не распаковывая). Имя должно начинаться с restore, например restore.zip — переименуйте, если нужно.",
   "   Если в этой копии нет фото (смотрите manifest.json: photos = 0), загрузите ещё последнюю копию с фото: restore-foto.zip.",
+  "   Если копия пришла ЧАСТЯМИ (часть 1 из 3 и т. д.) — загрузите все части, назвав их restore-1.zip, restore-2.zip, restore-3.zip.",
   "3. Перезапустите приложение (круглая стрелка). При запуске копия развернётся сама, а прежние данные сохранятся в /data/backups.",
   "",
   "Ссылки, QR-коды и бот остаются прежними: они ведут в бота, а не на адрес сервера.",
 ].join("\n");
+
+/**
+ * Cuts one copy into several smaller ZIPs (each ≤ maxBytes where possible) — for chats/servers that refuse big files
+ * (Telegram through our relay abroad answered «413»). Part 1 has all the data + as many photos as fit; the next parts
+ * hold only photos. Every part is a full archive with its own manifest and can be restored on its own.
+ */
+function splitBackup(buf, maxBytes) {
+  const entries = readZip(buf);
+  const man = JSON.parse(entries.find((e) => e.name === "manifest.json").data.toString("utf8"));
+  const core = entries.filter((e) => !e.name.startsWith("uploads/") && e.name !== "manifest.json");
+  const photos = entries.filter((e) => e.name.startsWith("uploads/"));
+  const groups = [[]];
+  let size = core.reduce((s, e) => s + e.data.length, 0) + 2048;
+  for (const ph of photos) {
+    const cost = ph.data.length + 200;
+    if (groups[groups.length - 1].length && size + cost > maxBytes) { groups.push([]); size = 4096; }
+    groups[groups.length - 1].push(ph); size += cost;
+  }
+  const now = man.createdAt ? new Date(man.createdAt) : new Date();
+  return groups.map((g, i) => {
+    const m = Object.assign({}, man, { part: i + 1, parts: groups.length, photos: g.length, files: i ? [] : man.files });
+    const list = [{ name: "manifest.json", data: Buffer.from(JSON.stringify(m, null, 1)) }].concat(i ? core.filter((e) => !/\.json$/.test(e.name)) : core, g);
+    return makeZip(list, now);
+  });
+}
 
 /** Unpacks one archive into dataDir: JSON files are replaced, photos are added. Returns the manifest. */
 function restoreBackup(dataDir, buf) {
@@ -166,4 +192,4 @@ function saveLocal(dataDir, name, buf, keep = 14) {
   return path.join(dir, name);
 }
 
-module.exports = { makeZip, readZip, createBackup, restoreBackup, restoreOnStart, saveLocal, uploadsList, crc32 };
+module.exports = { makeZip, readZip, splitBackup, createBackup, restoreBackup, restoreOnStart, saveLocal, uploadsList, crc32 };

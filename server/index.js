@@ -1080,11 +1080,30 @@ function createApp(opts = {}) {
         `\n\nСохраните файл. Как восстановить — внутри архива, файл «КАК-ВОССТАНОВИТЬ.txt».`;
       const to = backupTo(), sentTo = [];
       let sendError = "";
+      const fileBase = `${(S.brand || "shop").replace(/[^A-Za-z0-9]+/g, "-").toLowerCase()}-${name}`;
+      const tooBig = (e) => /\b413\b|too large|слишком больш/i.test(String(e && e.message));
       for (const r of to) {
         const b = botFor(r.platform);
         if (!b || !b.sendDocument) continue;
-        try { await b.sendDocument(r.id, buf, `${(S.brand || "shop").replace(/[^A-Za-z0-9]+/g, "-").toLowerCase()}-${name}`, caption); sentTo.push(r.id); }
-        catch (e) { sendError = e.message; log.error("Копия в чат " + r.id + ": " + e.message); }
+        try { await b.sendDocument(r.id, buf, fileBase, caption); sentTo.push(r.id); continue; }
+        catch (e) {
+          if (!tooBig(e)) { sendError = e.message; log.error("Копия в чат " + r.id + ": " + e.message); continue; }
+        }
+        // the file is too big for the way to the chat (e.g. Telegram through the relay abroad) — send it in parts
+        let ok = false, lastErr = "";
+        for (let max = 9e6; max >= 1e6 && !ok; max = Math.floor(max / 2)) {
+          const parts = BK.splitBackup(buf, max);
+          if (parts.length > 30) break;
+          try {
+            for (const [i, part] of parts.entries()) {
+              const cap = i ? `🗄 Копия ${escH(S.brand || "магазина")} от ${ruDT(now)} — часть ${i + 1} из ${parts.length} (фото)` : caption + `\n\n📦 Копия большая, поэтому пришла частями: ${parts.length} шт. Сохраните все.`;
+              await b.sendDocument(r.id, part, fileBase.replace(/\.zip$/, `-part${i + 1}of${parts.length}.zip`), cap);
+            }
+            ok = true;
+          } catch (e) { lastErr = e.message; if (!tooBig(e)) break; }
+        }
+        if (ok) sentTo.push(r.id);
+        else { sendError = lastErr || "файл слишком большой"; log.error("Копия в чат " + r.id + " (частями): " + sendError); }
       }
       const next = Object.assign(st, { day: LY.todayLocal(now), lastAt: now.toISOString(), lastName: name, lastSize: buf.length, lastSent: sentTo.length, lastError: sendError || (to.length ? "" : "Некому отправить: нет владельца") });
       if (withPhotos && (sentTo.length || !to.length || !anyBot())) Object.assign(next, { photosSig: sig, photosAt: now.toISOString(), photosName: name });
