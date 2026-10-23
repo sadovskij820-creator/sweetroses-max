@@ -15,6 +15,7 @@ const { importCatalog } = require("./importer");
 const BK = require("./backup");
 const qrcode = require("./vendor/qrcode.js");
 const crypto = require("crypto");
+const zlib = require("zlib");
 
 loadDotEnv(path.join(__dirname, "..", ".env"));
 
@@ -1069,17 +1070,28 @@ function createApp(opts = {}) {
     const st = bkState();
     try {
       store.flush();
-      const photos = BK.uploadsList(config.dataDir);
-      const sig = crypto.createHash("sha1").update(photos.join(",")).digest("hex");
+      /* 23.10.2026: every order adds a photo of the receipt, so «all photos» grew every day and the night copy with them
+         (in 2–3 months: hundreds of MB in memory at night — the shop could fall, the file would not reach the chat).
+         Now: shop photos (bouquets, categories, reviews) — when they changed and once a week, as before;
+         receipts — only the NEW ones since the last copy that reached the chat (and never older than 14 days). */
+      const all = BK.uploadsList(config.dataDir);
+      const receiptOf = new Map();
+      for (const o of store.getOrders().list) if (o.receipt && /^\/u\//.test(o.receipt)) receiptOf.set(o.receipt.slice(3), o.receiptAt || o.createdAt || "");
+      const shopPhotos = all.filter((f) => !receiptOf.has(f));
+      const sig = crypto.createHash("sha1").update(shopPhotos.join(",")).digest("hex");
       const withPhotos = full || sig !== st.photosSig || !st.photosAt || now - new Date(st.photosAt) > 7 * 864e5;
+      const since = Math.max(now - 14 * 864e5, full ? 0 : (st.receiptsAt ? new Date(st.receiptsAt) - 3600e3 : 0));
+      const newReceipts = all.filter((f) => receiptOf.has(f) && new Date(receiptOf.get(f) || 0).getTime() >= since);
+      const only = new Set([...(withPhotos ? shopPhotos : []), ...newReceipts]);
       const S = store.getCatalog().settings;
-      const { buf, manifest } = BK.createBackup(config.dataDir, { withPhotos, brand: S.brand || "", now });
+      const { buf, manifest } = BK.createBackup(config.dataDir, { only, brand: S.brand || "", now, extra: { shopPhotos: withPhotos ? shopPhotos.length : 0, receipts: newReceipts.length } });
       const stamp = LY.todayLocal(now) + "-" + String(LY.hourLocal(now)).padStart(2, "0") + new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Irkutsk", minute: "2-digit" }).format(now).padStart(2, "0");
       const name = `backup-${stamp}${withPhotos ? "-foto" : ""}.zip`;
       BK.saveLocal(config.dataDir, name, buf);
       const nCust = Object.keys(store.getCustomers().list).length, nOrd = store.getOrders().list.length;
       const caption = `🗄 <b>Копия ${escH(S.brand || "магазина")}</b> от ${ruDT(now)}\nКлиентов: ${nCust} · заказов: ${nOrd} · товаров: ${store.getCatalog().products.length}\n` +
-        (withPhotos ? `Фото: ${manifest.photos} (все)` : `Фото не менялись — они в копии от ${st.photosAt ? ruDT(st.photosAt) : "—"}`) +
+        (withPhotos ? `Фото букетов: ${manifest.shopPhotos} (все)` : `Фото букетов не менялись — они в копии от ${st.photosAt ? ruDT(st.photosAt) : "—"}`) +
+        (newReceipts.length ? ` · новых чеков: ${newReceipts.length}` : "") +
         `\n\nСохраните файл. Как восстановить — внутри архива, файл «КАК-ВОССТАНОВИТЬ.txt».`;
       const to = backupTo(), sentTo = [];
       let sendError = "";
@@ -1110,6 +1122,11 @@ function createApp(opts = {}) {
       }
       const next = Object.assign(st, { day: LY.todayLocal(now), lastAt: now.toISOString(), lastName: name, lastSize: buf.length, lastSent: sentTo.length, lastError: sendError || (to.length ? "" : "Некому отправить: нет владельца") });
       if (withPhotos && (sentTo.length || !to.length || !anyBot())) Object.assign(next, { photosSig: sig, photosAt: now.toISOString(), photosName: name });
+      if (sentTo.length || !to.length || !anyBot()) next.receiptsAt = now.toISOString();
+      // the copy did not reach anybody: say it in plain text (a short message passes even when a file does not)
+      if (to.length && !sentTo.length && anyBot()) {
+        for (const r of to) sendUser(r.id, `⚠️ <b>Копия ${escH(S.brand || "магазина")} от ${ruDT(now)} не отправлена</b>\nПричина: ${escH(sendError || "неизвестно")}\nКопия сохранена на сервере (${(buf.length / 1048576).toFixed(1)} МБ). Попробуйте «Сделать копию сейчас» в настройках.`, false, r.platform).catch(() => {});
+      }
       bkSave(next);
       return { name, size: buf.length, withPhotos, sentTo: sentTo.length, error: next.lastError };
     } finally { bkRunning = false; }
@@ -1133,8 +1150,15 @@ function createApp(opts = {}) {
   /* ---------- server ---------- */
   function httpError(status, message) { const e = new Error(message); e.status = status; return e; }
   function send(res, status, data, headers) {
-    res.writeHead(status, Object.assign({ "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }, headers || {}));
-    res.end(JSON.stringify(data));
+    const buf = Buffer.from(JSON.stringify(data));
+    const h = Object.assign({ "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }, headers || {});
+    // 23.10.2026: big answers are sent compressed when the phone accepts it (the catalog: 21 KB → 4 KB); small ones — as is
+    if (buf.length > 4096 && /\bgzip\b/.test(String((res.req && res.req.headers["accept-encoding"]) || ""))) {
+      res.writeHead(status, Object.assign(h, { "Content-Encoding": "gzip", Vary: "Accept-Encoding" }));
+      return res.end(zlib.gzipSync(buf, { level: 6 }));
+    }
+    res.writeHead(status, h);
+    res.end(buf);
   }
   function readBody(req) {
     return new Promise((resolve, reject) => {
@@ -1179,19 +1203,49 @@ function createApp(opts = {}) {
     if (S.catalogIcon === "flower") html = html.replace(/(<button class="tab" data-tab="catalog"[^>]*>\s*<svg viewBox="0 0 24 24">)[\s\S]*?(<\/svg>)/, `$1${FLOWER_ICON}$2`);
     return html;
   }
+  /* 23.10.2026 speed: the app's files are read and compressed once (app.js 183 KB → 49 KB) and get an ETag, so a phone
+     that opened the shop before downloads nothing again («304 — not changed») until the next update. */
+  const staticCache = new Map(); // file → { mtime, buf, gz, etag }
+  const gzOk = (req) => /\bgzip\b/.test(String(req.headers["accept-encoding"] || ""));
+  const etagOf = (buf) => '"' + crypto.createHash("sha1").update(buf).digest("base64url").slice(0, 22) + '"';
+  function sendFile(req, res, entry, type, cache) {
+    const h = { "Content-Type": type, "Cache-Control": cache, "X-Content-Type-Options": "nosniff", ETag: entry.etag, Vary: "Accept-Encoding" };
+    if (String(req.headers["if-none-match"] || "").split(/\s*,\s*/).includes(entry.etag)) { res.writeHead(304, h); return res.end(); }
+    const gz = entry.gz && gzOk(req);
+    if (gz) h["Content-Encoding"] = "gzip";
+    res.writeHead(200, h);
+    res.end(req.method === "HEAD" ? undefined : gz ? entry.gz : entry.buf);
+  }
+  const packText = (buf) => ({ buf, gz: buf.length > 1024 ? zlib.gzipSync(buf, { level: 9 }) : null, etag: etagOf(buf) });
+  let indexCache = null; // { key, entry } — rebuilt when the catalog or index.html changes
   function serveStatic(req, res, pathname) {
     let rel = decodeURIComponent(pathname);
     if (rel === "/" || rel === "") rel = "/index.html";
     const file = path.normalize(path.join(config.publicDir, rel));
     if (!file.startsWith(config.publicDir) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) { res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" }); return res.end("Не найдено"); }
     const ext = path.extname(file);
-    if (path.basename(file) === "index.html") { // the shop's name, logo and colours from the first frame — no Sweet Roses flash
-      res.writeHead(200, { "Content-Type": MIME[".html"], "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff" });
-      return res.end(brandedIndex(fs.readFileSync(file, "utf8")));
+    const mtime = fs.statSync(file).mtimeMs;
+    if (path.basename(file) === "index.html") {
+      // the shop's name, logo and colours from the first frame — no Sweet Roses flash; and the catalog itself is put
+      // into the page, so the app shows the bouquets without one more trip to the server (through the door abroad)
+      const cat = publicCatalog();
+      const json = JSON.stringify(cat);
+      const key = mtime + ":" + json.length + ":" + crypto.createHash("sha1").update(json).digest("hex");
+      if (!indexCache || indexCache.key !== key) {
+        const inline = `<script>window.__CATALOG=${json.replace(/</g, "\\u003c").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029")};</script>`;
+        let html = brandedIndex(fs.readFileSync(file, "utf8"));
+        html = html.includes('<script src="pricing.js"></script>') ? html.replace('<script src="pricing.js"></script>', inline + '<script src="pricing.js"></script>') : html;
+        indexCache = { key, entry: packText(Buffer.from(html)) };
+      }
+      return sendFile(req, res, indexCache.entry, MIME[".html"], "no-cache");
     }
-    const long = ext === ".woff2";
-    res.writeHead(200, { "Content-Type": MIME[ext] || "application/octet-stream", "Cache-Control": long ? "public, max-age=31536000, immutable" : "no-cache", "X-Content-Type-Options": "nosniff" });
-    fs.createReadStream(file).pipe(res);
+    let entry = staticCache.get(file);
+    if (!entry || entry.mtime !== mtime) {
+      const buf = fs.readFileSync(file);
+      entry = Object.assign(/\.(js|css|html|svg|json|txt)$/.test(ext) ? packText(buf) : { buf, gz: null, etag: etagOf(buf) }, { mtime });
+      staticCache.set(file, entry);
+    }
+    sendFile(req, res, entry, MIME[ext] || "application/octet-stream", ext === ".woff2" ? "public, max-age=31536000, immutable" : "no-cache");
   }
 
   // When no WEBAPP_URL is configured, learn the public https address from the first real request

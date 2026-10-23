@@ -56,7 +56,7 @@ test("night copy: once a day after 3:00, sent to the owner, 14 kept on the serve
   await app.runJobs(at("2026-10-17T19:10:00Z")); // next night, photos unchanged — data only
   assert.equal(docs.length, 2);
   assert.ok(!docs[1].name.includes("foto"));
-  assert.match(docs[1].caption, /Фото не менялись/);
+  assert.match(docs[1].caption, /Фото букетов не менялись/);
   assert.ok(!BK.readZip(docs[1].buf).some((e) => e.name.startsWith("uploads/")));
   for (let d = 18; d < 40; d++) await app.runJobs(new Date(Date.UTC(2026, 9, d, 19, 10)));
   const kept = fs.readdirSync(path.join(dataDir, "backups")).filter((f) => /^backup-/.test(f));

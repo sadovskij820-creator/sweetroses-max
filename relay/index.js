@@ -8,6 +8,7 @@
  */
 const http = require("http");
 const crypto = require("crypto");
+const zlib = require("zlib");
 
 const KEY = process.env.RELAY_KEY || "";
 // Shop front door (19.10.2026): customers open the mini app here (abroad, reachable with any VPN); every request goes on
@@ -38,7 +39,11 @@ async function proxyShop(req, res, shop, fetchImpl) {
     const r = await fetchImpl(shop + req.url, { method: req.method, headers, body, redirect: "manual", signal: AbortSignal.timeout(60000) });
     const out = {};
     for (const h of PASS_RES) { const v = r.headers.get(h); if (v) out[h] = v; }
-    const buf = req.method === "HEAD" ? Buffer.alloc(0) : Buffer.from(await r.arrayBuffer());
+    let buf = req.method === "HEAD" ? Buffer.alloc(0) : Buffer.from(await r.arrayBuffer());
+    // 23.10.2026 speed: the way to the phone is compressed too (the shop compresses, but fetch here unpacks it)
+    if (buf.length > 1024 && /\bgzip\b/.test(String(req.headers["accept-encoding"] || "")) && /^(text\/|application\/(json|javascript))/.test(out["content-type"] || "")) {
+      buf = zlib.gzipSync(buf, { level: 6 }); out["content-encoding"] = "gzip"; out["vary"] = "Accept-Encoding";
+    }
     res.writeHead(r.status, out); res.end(buf);
   } catch (e) {
     res.writeHead(502, { "Content-Type": "text/html; charset=utf-8" });

@@ -72,7 +72,7 @@ const UPLOAD_RE = /^[a-f0-9]{24}\.(jpg|png|webp)$/;
 const uploadsList = (dataDir) => { try { return fs.readdirSync(path.join(dataDir, "uploads")).filter((f) => UPLOAD_RE.test(f)).sort(); } catch (e) { return []; } };
 
 /** Builds the archive from the files in dataDir (call store.flush() first). */
-function createBackup(dataDir, { withPhotos = true, brand = "", now = new Date() } = {}) {
+function createBackup(dataDir, { withPhotos = true, only = null, brand = "", now = new Date(), extra = {} } = {}) {
   const entries = [];
   const files = [];
   for (const n of DATA_FILES) {
@@ -80,8 +80,10 @@ function createBackup(dataDir, { withPhotos = true, brand = "", now = new Date()
     if (fs.existsSync(f)) { entries.push({ name: n + ".json", data: fs.readFileSync(f) }); files.push(n); }
   }
   const photos = uploadsList(dataDir);
-  if (withPhotos) for (const f of photos) entries.push({ name: "uploads/" + f, data: fs.readFileSync(path.join(dataDir, "uploads", f)) });
-  const manifest = { app: "digitap-shop", brand, createdAt: now.toISOString(), files, photos: withPhotos ? photos.length : 0, photosTotal: photos.length };
+  // only: the exact photos to put in (23.10.2026 — shop photos + only the NEW receipts, so the night copy stays small)
+  const take = only ? photos.filter((f) => only.has(f)) : withPhotos ? photos : [];
+  for (const f of take) entries.push({ name: "uploads/" + f, data: fs.readFileSync(path.join(dataDir, "uploads", f)) });
+  const manifest = Object.assign({ app: "digitap-shop", brand, createdAt: now.toISOString(), files, photos: take.length, photosTotal: photos.length }, extra);
   entries.unshift({ name: "manifest.json", data: Buffer.from(JSON.stringify(manifest, null, 1)) });
   entries.push({ name: "КАК-ВОССТАНОВИТЬ.txt", data: Buffer.from(RESTORE_HELP, "utf8") });
   return { buf: makeZip(entries, now), manifest };
@@ -97,6 +99,9 @@ const RESTORE_HELP = [
   "3. Перезапустите приложение (круглая стрелка). При запуске копия развернётся сама, а прежние данные сохранятся в /data/backups.",
   "",
   "Ссылки, QR-коды и бот остаются прежними: они ведут в бота, а не на адрес сервера.",
+  "",
+  "Фото чеков об оплате: в каждой ночной копии — только новые чеки за сутки (чтобы копия не росла). Все чеки также",
+  "приходили флористу в чат вместе с заявками.",
 ].join("\n");
 
 /**
