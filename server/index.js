@@ -279,7 +279,8 @@ function createApp(opts = {}) {
       payments: { enabled: paymentsOn(), provider: paySettings().provider },
       transfer: { enabled: transferOn(), mode: transferSettings().mode },
       categories: cats,
-      products: c.products.filter((p) => !p.hidden).map(({ sourceUrl, ...p }) => p),
+      // «будет с …» whose day has come is not sent at all — the product is simply in stock (24.10.2026)
+      products: c.products.filter((p) => !p.hidden).map(({ sourceUrl, ...p }) => (p.availFrom && p.availFrom <= LY.todayLocal(new Date()) ? (({ availFrom, ...q }) => q)(p) : p)),
       addons: c.addons.filter((a) => !a.hidden),
       chocolates: c.chocolates,
       promos: [], // codes are checked on the server
@@ -1321,6 +1322,11 @@ function createApp(opts = {}) {
     const L = loyal(), db = custDb();
     const today = LY.todayLocal(now), hour = LY.hourLocal(now);
     let changed = false;
+    // «нет в наличии, будет с …»: on that day the mark is removed from the product itself (24.10.2026, Gagulya —
+    // the mark stayed on the 22nd); the admin then sees it as an ordinary product in stock
+    { const cat = store.getCatalog(); let dirty = false;
+      for (const p of cat.products || []) if (p.availFrom && p.availFrom <= today) { delete p.availFrom; dirty = true; }
+      if (dirty) store.setCatalog(cat); }
     for (const c of Object.values(db.list)) {
       if (LY.expireLots(c, now)) changed = true;
       c.sent = c.sent || {};

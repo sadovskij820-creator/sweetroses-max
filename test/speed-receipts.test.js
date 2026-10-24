@@ -97,3 +97,18 @@ test("the door abroad compresses pages for the phone and passes «not changed» 
   const b = await raw("/app.js", { "Accept-Encoding": "gzip", "If-None-Match": a.res.headers.etag });
   assert.equal(b.res.statusCode, 304);
 });
+
+test("«будет с …»: on that day the mark is gone — from the catalog at once and from the product by the background job", async (t) => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "av-"));
+  const { app, url } = await start(dataDir, null); t.after(() => app.server.close());
+  const LY = require("../server/loyalty");
+  const today = LY.todayLocal(new Date()), later = LY.todayLocal(new Date(Date.now() + 5 * 864e5));
+  const c = app.store.getCatalog(), [a, b] = c.products.filter((p) => !p.hidden);
+  a.availFrom = today; b.availFrom = later; app.store.setCatalog(c);
+  const pub = await (await fetch(url + "/api/catalog")).json();
+  assert.equal(pub.products.find((p) => p.id === a.id).availFrom, undefined);
+  assert.equal(pub.products.find((p) => p.id === b.id).availFrom, later);
+  await app.runJobs(new Date());
+  assert.equal(app.store.getCatalog().products.find((p) => p.id === a.id).availFrom, undefined);
+  assert.equal(app.store.getCatalog().products.find((p) => p.id === b.id).availFrom, later);
+});
