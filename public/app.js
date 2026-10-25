@@ -1018,6 +1018,7 @@
           <p class="muted" style="font-size:13px;margin:4px 0 0">${c.image ? "Своё фото на кружке." : "Фото кружка берём с первого товара."} Нажмите на кружок, чтобы сменить.</p>
           ${c.image ? `<button class="btn ghost small" style="margin-top:6px" data-action="catPhotoReset" data-id="${esc(c.id)}">Убрать своё фото</button>` : ""}</div>
       </div>
+      ${(() => { const L = (d.catLinks || {})[c.id] || {}; const names = { telegram: "Telegram", max: "MAX" }; const ls = Object.entries(L); return ls.length ? `<div class="info-card" style="margin-top:14px;text-align:left"><b>Ссылка сразу на эту категорию</b><p class="muted" style="font-size:12.5px;margin:4px 0 8px">Для Instagram, сторис, рассылок: человек откроет магазин сразу на «${esc(c.title)}».${c.hidden ? " Категория скрыта — пока она скрыта, ссылка откроет обычную главную." : ""}</p>${ls.map(([pf, u]) => `<div style="display:flex;gap:8px;align-items:center;margin-top:6px"><input class="input" style="min-height:40px;font-size:13px" readonly value="${esc(u)}" aria-label="Ссылка ${names[pf] || pf}"><button class="btn small" data-action="copyText" data-text="${esc(u)}">${ls.length > 1 ? esc(names[pf] || pf) : "Копировать"}</button></div>`).join("")}</div>` : ""; })()}
       <button class="btn block" style="margin:14px 0 4px" data-action="newInCat" data-cat="${esc(c.id)}">+ Новый товар в эту категорию</button>
       <h2 class="h2" style="font-size:22px">В категории · ${inCat.length}</h2>
       ${inCat.map((p) => row(p, true)).join("") || `<p class="muted">Пока пусто — добавьте новый товар или выберите из списка ниже.</p>`}
@@ -1921,6 +1922,7 @@ ${d.shop && d.shop.noLevels ? "" : `      <h2 class="h2" style="font-size:22px">
         else if (fresh && state.start.gift) location.hash = "#/gift/" + state.start.gift;
         else if (fresh && state.start.productId) location.hash = "#/p/" + state.start.productId;
         else if (fresh && state.start.review) location.hash = "#/review";
+        else if (fresh && state.start.category) location.hash = "#/catalog/" + state.start.category;
         render();
         const deep = state.start.transfer || state.start.paid || state.start.gift || state.start.productId || state.start.review;
         loadProfile().then(() => {

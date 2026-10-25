@@ -112,3 +112,23 @@ test("«будет с …»: on that day the mark is gone — from the catalog a
   assert.equal(app.store.getCatalog().products.find((p) => p.id === a.id).availFrom, undefined);
   assert.equal(app.store.getCatalog().products.find((p) => p.id === b.id).availFrom, later);
 });
+
+test("a link straight to a category: c_<id> → the bot's button «Смотреть» → the app opens that category", async (t) => {
+  const LY = require("../server/loyalty");
+  assert.deepEqual(LY.parseStart("c_vitrina"), { category: "vitrina" });
+  assert.deepEqual(LY.parseStart("c_vitrina-s_insta"), { category: "vitrina", source: "insta" });
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "ct-"));
+  const bot = { sendMessage: async () => {}, getUsername: () => "gagulya_bot" };
+  const { app, url } = await start(dataDir, bot); t.after(() => app.server.close());
+  app.claimOwner({ id: 77 });
+  const c = app.store.getCatalog();
+  c.categories.push({ id: "cvit", title: "Собрана витрина", sort: 99 }); app.store.setCatalog(c);
+  const r = app.onBotStart({ id: 501, first_name: "Анна" }, "c_cvit");
+  assert.equal(r.button, "Смотреть"); assert.match(r.greeting, /Собрана витрина/); assert.equal(r.appPayload, "c_cvit");
+  const me = await (await fetch(url + "/api/me", { headers: { "X-Init-Data": max.signInitData({ id: 501, first_name: "Анна" }, TOKEN, undefined, { start_param: "c_cvit" }) } })).json();
+  assert.equal(me.start.category, "cvit");
+  const nope = await (await fetch(url + "/api/me", { headers: { "X-Init-Data": max.signInitData({ id: 502, first_name: "Б" }, TOKEN, undefined, { start_param: "c_nosuch" }) } })).json();
+  assert.equal(nope.start.category, undefined);
+  const adm = await (await fetch(url + "/api/admin/catalog", { headers: { "X-Init-Data": max.signInitData({ id: 77, first_name: "O" }, TOKEN) } })).json();
+  assert.equal(adm.catLinks.cvit.max, "https://max.ru/gagulya_bot?start=c_cvit");
+});

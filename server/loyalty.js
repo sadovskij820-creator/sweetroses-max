@@ -76,6 +76,7 @@ function parseStart(sp) {
     else if (k === "s" && /^[a-z0-9]{1,20}$/.test(v)) out.source = v;
     else if (k === "g" && /^[0-9a-f]{10}$/.test(v)) out.gift = v;
     else if (k === "rv") out.review = true;
+    else if (k === "c" && /^[\w]{1,40}$/.test(v)) out.category = v; // a link straight to a category (25.10.2026)
   }
   return out;
 }

@@ -257,6 +257,10 @@ function createApp(opts = {}) {
     if (st.gift && findGift(st.gift)) Object.assign(res, { greeting: "🎁 Вам открытка с подарком! Нажмите кнопку, чтобы её открыть.", button: "Открыть открытку" });
     else if (product && st.hint) Object.assign(res, { greeting: `💝 Вам намекают на подарок: «${product.title}». Нажмите кнопку, чтобы посмотреть.`, button: "Посмотреть подарок" });
     else if (product) Object.assign(res, { greeting: `Вам прислали «${product.title}». Нажмите кнопку, чтобы посмотреть.`, button: "Посмотреть" });
+    else if (st.category && store.getCatalog().categories.some((x) => x.id === st.category && !x.hidden)) {
+      const cat = store.getCatalog().categories.find((x) => x.id === st.category);
+      Object.assign(res, { greeting: `${E()} <b>${cat.title.replace(/[&<>]/g, "")}</b> — нажмите кнопку ниже, чтобы посмотреть.`, button: "Смотреть" });
+    }
     else if (st.review) {
       const L = loyal(), b = LY.on(L, "reviews") && LY.on(L, "bonuses") ? L.reviewBonus : 0;
       Object.assign(res, { greeting: `Здравствуйте! 💐 Спасибо, что выбрали ${store.getCatalog().settings.brand || "нас"}.\n\nРасскажите, как вам букет — это займёт минуту${b ? `, а мы подарим <b>${b} бонусов</b> на следующий заказ` : ""}. Нажмите кнопку ниже 👇`, button: "⭐ Оставить отзыв" });
@@ -350,6 +354,7 @@ function createApp(opts = {}) {
         }
       }
       if (st.gift && findGift(st.gift)) start.gift = st.gift;
+      if (st.category && store.getCatalog().categories.some((x) => x.id === st.category && !x.hidden)) start.category = st.category;
       if (st.paid) start.paid = st.paid;
       if (st.review) start.review = true;
       // the «pay and attach the receipt» button: open the payment page of THIS order (only the customer's own order)
@@ -768,7 +773,7 @@ function createApp(opts = {}) {
     return out;
   }
 
-  on("GET", "/api/admin/catalog", ({ user }) => Object.assign({}, store.getCatalog(), isOwner(user) ? {} : { settings: Object.assign({}, store.getCatalog().settings, { transfer: undefined, staff: undefined, invites: undefined }) }, { shop: shopPublic(), loyaltyResolved: loyal(), paymentsResolved: Object.assign({}, paySettings(), onlinePayAllowed ? {} : { enabled: false }), onlinePayAllowed, transferResolved: isOwner(user) ? transferSettings() : null, env: { yookassa: !!(process.env.YOOKASSA_SHOP_ID && process.env.YOOKASSA_SECRET_KEY) } }), { admin: true });
+  on("GET", "/api/admin/catalog", ({ user }) => Object.assign({ catLinks: Object.fromEntries(store.getCatalog().categories.map((c) => [c.id, linksFor(botLink, "c_" + c.id)])) }, store.getCatalog(), isOwner(user) ? {} : { settings: Object.assign({}, store.getCatalog().settings, { transfer: undefined, staff: undefined, invites: undefined }) }, { shop: shopPublic(), loyaltyResolved: loyal(), paymentsResolved: Object.assign({}, paySettings(), onlinePayAllowed ? {} : { enabled: false }), onlinePayAllowed, transferResolved: isOwner(user) ? transferSettings() : null, env: { yookassa: !!(process.env.YOOKASSA_SHOP_ID && process.env.YOOKASSA_SECRET_KEY) } }), { admin: true });
   on("GET", "/api/admin/orders", () => ({ orders: store.getOrders().list.slice(-200).reverse().map((o) => ({ ...o, summary: summaryText(o) })) }), { admin: true });
   on("PATCH", "/api/admin/orders/:id", ({ params, body }) => {
     const o = store.getOrders().list.find((x) => String(x.id) === params.id);
