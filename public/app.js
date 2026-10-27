@@ -10,7 +10,23 @@
   // Host messenger. MAX's script creates window.WebApp even outside MAX, so only a non-empty initData means "inside MAX".
   const TGW = window.Telegram && window.Telegram.WebApp;
   const LAUNCH_HASH = location.hash; // MAX passes launch data in the URL fragment (#WebAppData=...); keep it before the router changes the hash
-  const MXW = window.WebApp && (window.WebApp.initData || /WebAppData=/.test(LAUNCH_HASH)) ? window.WebApp : null;
+  /* 27.10.2026, Gagulya: MAX's own script (st.max.ru) sometimes loads slowly — after 5 s the app started WITHOUT it and
+     opened as a stranger (no admin gear, «open through the bot»). The launch data is in the address anyway, so without
+     the script a small stand-in is used: the person is recognised, only the extras (share, phone button) are off. */
+  function maxStandIn(h) {
+    let user = null;
+    try {
+      let v = h.slice(h.indexOf("WebAppData=") + 11);
+      for (const t of ["&WebAppPlatform=", "&WebAppVersion=", "&WebAppStartParam="]) { const j = v.indexOf(t); if (j !== -1) v = v.slice(0, j); }
+      if (!v.includes("=") && /%3D/i.test(v)) v = decodeURIComponent(v);
+      user = JSON.parse(new URLSearchParams(v).get("user") || "null");
+    } catch (e) { /* no user */ }
+    const noop = () => {};
+    return { standIn: true, initData: h, initDataUnsafe: { user }, platform: "", openLink: (u) => window.open(u, "_blank"),
+      BackButton: { show: noop, hide: noop, onClick: noop }, HapticFeedback: { impactOccurred: noop, notificationOccurred: noop } };
+  }
+  const MXW = window.WebApp && (window.WebApp.initData || /WebAppData=/.test(LAUNCH_HASH)) ? window.WebApp
+    : /WebAppData=/.test(LAUNCH_HASH) && !/tgWebAppData=/.test(LAUNCH_HASH) && !(TGW && TGW.initData) ? maxStandIn(LAUNCH_HASH) : null;
   const mx = MXW && !(TGW && TGW.initData) ? MXW : null;
   const tg = !mx && TGW && TGW.initData !== undefined ? TGW : null;
   const host = tg || mx;
