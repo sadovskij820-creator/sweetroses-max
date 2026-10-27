@@ -109,17 +109,38 @@
   const toMin = (hhmm) => { const [h, m] = hhmm.split(":").map(Number); return h * 60 + m; };
 
   /* ---------------- API ---------------- */
+  /* 27.10.2026: on a weak mobile network (phone → door abroad → server) a request could hang for minutes and the app
+     looked frozen. Now every request has a time limit; reading requests are repeated twice by themselves. */
   async function api(path, opts) {
     opts = opts || {};
-    const res = await fetch(path, {
-      method: opts.method || "GET",
-      headers: Object.assign({ "Content-Type": "application/json", "X-Init-Data": INIT_DATA, "X-Platform": mx ? "max" : "telegram" }, START_PARAM ? { "X-Start-Param": START_PARAM } : {}),
-      body: opts.body ? JSON.stringify(opts.body) : undefined,
-    });
-    let data = null;
-    try { data = await res.json(); } catch (e) {}
-    if (!res.ok) throw new Error((data && data.error) || "Не удалось связаться с сервером. Проверьте интернет и попробуйте ещё раз.");
-    return data;
+    const method = opts.method || "GET";
+    const tries = method === "GET" ? 3 : 1;
+    let lastErr = null;
+    for (let i = 0; i < tries; i++) {
+      if (i) await new Promise((r) => setTimeout(r, 800 * i));
+      const ctl = typeof AbortController !== "undefined" ? new AbortController() : null;
+      const timer = ctl ? setTimeout(() => ctl.abort(), opts.timeout || (method === "GET" ? 15000 : 30000)) : null;
+      let res;
+      try {
+        res = await fetch(path, {
+          method,
+          headers: Object.assign({ "Content-Type": "application/json", "X-Init-Data": INIT_DATA, "X-Platform": mx ? "max" : "telegram" }, START_PARAM ? { "X-Start-Param": START_PARAM } : {}),
+          body: opts.body ? JSON.stringify(opts.body) : undefined,
+          signal: ctl ? ctl.signal : undefined,
+        });
+      } catch (e) {
+        clearTimeout(timer);
+        lastErr = Object.assign(new Error("Нет связи с магазином. Проверьте интернет и попробуйте ещё раз."), { network: true });
+        continue;
+      }
+      clearTimeout(timer);
+      let data = null;
+      try { data = await res.json(); } catch (e) {}
+      if (res.ok) return data;
+      lastErr = Object.assign(new Error((data && data.error) || "Не удалось связаться с сервером. Проверьте интернет и попробуйте ещё раз."), { status: res.status, network: res.status >= 502 });
+      if (res.status < 500) break; // the server answered «no» — repeating won't help
+    }
+    throw lastErr;
   }
   function track(type, productId) {
     if (window.__MOCK) return;
@@ -935,7 +956,7 @@
       ${d.settings.tildaParts ? `<button class="btn soft small" data-action="importSite">Обновить с сайта</button>` : ""}</div>
       <input class="search" type="search" placeholder="Поиск товара" value="${esc(state.admin.search)}" data-input="adminSearch">
       ${list.map((p) => `<div class="admin-row ${p.hidden ? "is-hidden" : ""}">${imgTag(p.images[0], 120, "")}
-        <a href="#/admin/edit/${esc(p.id)}" style="text-decoration:none"><div class="t">${esc(p.title)}</div><div class="s">${rub(p.price)}${p.hidden ? " · скрыт" : ""}${availDate(p) ? ` · будет с ${dmISO(availDate(p))}` : ""}</div></a>
+        <a href="#/admin/edit/${esc(p.id)}" style="text-decoration:none"><div class="t">${esc(p.title)}</div><div class="s">${rub(p.price)}${p.hidden ? " · скрыт" : ""}${!p.hidden && !(p.price > 0) ? ` · <b style="color:#b3261e">⚠️ нет цены — заказать нельзя</b>` : ""}${availDate(p) ? ` · будет с ${dmISO(availDate(p))}` : ""}</div></a>
         <div class="mini"><button data-action="move" data-coll="products" data-id="${esc(p.id)}" data-dir="-1" aria-label="Выше">↑</button><button data-action="move" data-coll="products" data-id="${esc(p.id)}" data-dir="1" aria-label="Ниже">↓</button>
         <button data-action="toggleHidden" data-coll="products" data-id="${esc(p.id)}" aria-label="${p.hidden ? "Показать" : "Скрыть"}">${p.hidden ? "◌" : "●"}</button></div></div>`).join("")}`;
   }
@@ -1873,15 +1894,23 @@ ${d.shop && d.shop.noLevels ? "" : `      <h2 class="h2" style="font-size:22px">
     c.errors = validate(c);
     if (Object.keys(c.errors).length) { render(); const firstErr = $app.querySelector(".invalid, .err"); firstErr && firstErr.scrollIntoView({ block: "center", behavior: "smooth" }); try { host && host.HapticFeedback.notificationOccurred("error"); } catch (e) {} return; }
     c.sending = true; render();
+    // one key per checkout: if the answer gets lost and the order is sent again, the server returns the same order
+    if (!c.orderKey) c.orderKey = Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
     try {
       const body = {
+        orderKey: c.orderKey,
         cart: state.cart, promoCode: state.promo.percent ? state.promo.code : "",
         customer: { name: c.name.trim(), phone: c.phone.trim(), date: c.date, time: String(c.time || "").trim(), method: c.method, address: c.address.trim(), zoneId: c.method === "delivery" ? c.zoneId || "" : "", comment: c.comment.trim(),
           forOther: !!c.forOther, recipientName: String(c.recipientName || "").trim(), recipientPhone: String(c.recipientPhone || "").trim() },
         useBonus: !!c.useBonus, consent: !!c.marketing,
         gift: c.isGift ? { to: (c.giftTo || "").trim(), text: (c.giftText || "").trim() } : undefined,
       };
-      const r = window.__MOCK ? { id: 1024 } : await api("/api/orders", { method: "POST", body });
+      let r;
+      if (window.__MOCK) r = { id: 1024 };
+      else {
+        try { r = await api("/api/orders", { method: "POST", body }); }
+        catch (e) { if (!e.network) throw e; await new Promise((x) => setTimeout(x, 1500)); r = await api("/api/orders", { method: "POST", body }); } // same key — no double order
+      }
       store("sr_contact", { name: c.name, phone: c.phone, address: c.address, zoneId: c.zoneId || "" });
       state.cart = { lines: [], addons: {}, cardText: "" }; state.addonAsked = false; saveCart();
       state.promo = { code: "", percent: 0, message: "" };

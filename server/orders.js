@@ -62,6 +62,9 @@ function buildOrder({ catalog, orders, body, tgUser, now = new Date() }) {
     return { error: "К этому времени доставка в ваш район уже не успеет. Выберите время позже или другую дату." };
   }
   if (!totals.lines.length) return { error: "Корзина пуста" };
+  // a bouquet switched on without a price (27.10.2026: 24 imported ones have none) must not be sold for 0 ₽
+  const free = totals.lines.find((l) => !(l.price > 0));
+  if (free) return { error: `«${free.title}» сейчас нельзя заказать через приложение: цена уточняется. Позвоните нам — подскажем.` };
   // «нет в наличии, будет с …»: such a product can be ordered only for that date or later (Gagulya, 19.10.2026)
   for (const l of totals.lines) {
     const p = (catalog.products || []).find((x) => String(x.id) === String(l.id));

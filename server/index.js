@@ -293,7 +293,16 @@ function createApp(opts = {}) {
   }
 
   /** Managers' chats, each through the bot of its messenger. Returns [{ id, platform }] that got the message. */
-  async function notify(text) {
+  /* 27.10.2026: the way to Telegram (through the door abroad) sometimes drops for a few seconds («fetch failed» in the
+     log). A manager must not miss an order because of that: a message that failed is sent again in the background
+     after 5 s, 30 s and 2 min; after() runs for a late success (e.g. the photos of the order). */
+  const NOTIFY_RETRY = opts.notifyRetry || [5e3, 30e3, 120e3];
+  function retryLater(fn, label, step = 0) {
+    if (step >= NOTIFY_RETRY.length) { log.error(label + ": не доставлено после повторов"); return; }
+    const t = setTimeout(() => { fn().catch((e) => { log.error(label + " (повтор " + (step + 1) + "): " + e.message); retryLater(fn, label, step + 1); }); }, NOTIFY_RETRY[step]);
+    if (t.unref) t.unref();
+  }
+  async function notify(text, after) {
     const c = store.getCatalog();
     const to = new Map();
     const add = (pf, id) => { if (id) to.set(keyOf(pf, id), { platform: pf || messenger, id: String(id) }); };
@@ -304,7 +313,10 @@ function createApp(opts = {}) {
     for (const r of to.values()) {
       const b = botFor(r.platform);
       if (!b) continue;
-      try { await b.sendMessage(r.id, text); results.push(r); } catch (e) { log.error("Notify " + r.id + ": " + e.message); }
+      try { await b.sendMessage(r.id, text); results.push(r); } catch (e) {
+        log.error("Notify " + r.id + ": " + e.message);
+        retryLater(async () => { await b.sendMessage(r.id, text); if (after) await after(r).catch(() => {}); }, "Notify " + r.id);
+      }
     }
     return results;
   }
@@ -317,17 +329,18 @@ function createApp(opts = {}) {
   }
   /** New order to the managers: the text first, then the photos of what was ordered (if the bot can send pictures). */
   async function notifyOrder(o) {
-    const sent = await notify(managerMessage(o, o.platform || messenger, E()));
-    if (o.photosSent || !sent.length) return sent;
     const urls = [...new Set(o.totals.lines.map((l) => absUrl(l.image || "")).filter(Boolean))].slice(0, 6);
-    if (!urls.length) return sent;
-    o.photosSent = true; store.saveOrders();
     const titles = o.totals.lines.filter((l) => l.image).map((l) => l.title + (l.qty > 1 ? " × " + l.qty : "")).join(", ");
-    for (const r of sent) {
+    const photosTo = async (r) => {
       const b = botFor(r.platform);
-      if (!b || !b.sendPhotos) continue;
+      if (!urls.length || !b || !b.sendPhotos) return;
       try { await b.sendPhotos(r.id, urls, `Фото к заявке №${o.id}: ${titles}`.slice(0, 1000)); } catch (e) { log.error("Фото в заявку " + r.id + ": " + e.message); }
-    }
+    };
+    const first = !o.photosSent;
+    const sent = await notify(managerMessage(o, o.platform || messenger, E()), first ? photosTo : null);
+    if (!first || !sent.length || !urls.length) return sent;
+    o.photosSent = true; store.saveOrders();
+    for (const r of sent) await photosTo(r);
     return sent;
   }
 
@@ -500,13 +513,14 @@ function createApp(opts = {}) {
     if (o.status === "cancel") throw httpError(400, "Заказ отменён — оформите его заново");
     if (o.paid) return transferInfo(o);
     if (!Buffer.isBuffer(body) || !body.length) throw httpError(400, "Чек не получен — выберите фото или скриншот ещё раз");
+    if ((o.receiptCount || 0) >= 5) throw httpError(429, "Чек уже получен. Если нужно что-то исправить — позвоните нам");
     const kind = imageKind(body);
     if (!kind) throw httpError(400, "Нужен скриншот или фото чека (JPG, PNG)");
     fs.mkdirSync(uploadsDir, { recursive: true });
     const name = crypto.randomBytes(12).toString("hex") + "." + kind;
     fs.writeFileSync(path.join(uploadsDir, name), body);
     const first = !o.receipt;
-    o.receipt = "/u/" + name; o.receiptAt = new Date().toISOString();
+    o.receipt = "/u/" + name; o.receiptAt = new Date().toISOString(); o.receiptCount = (o.receiptCount || 0) + 1;
     o.transferClaimedAt = o.transferClaimedAt || o.receiptAt;
     const wasWaiting = !!o.awaitReceipt; delete o.awaitReceipt;
     store.saveOrders();
@@ -525,7 +539,19 @@ function createApp(opts = {}) {
     if (p.firstOrderOnly && user && !isFirstOrder(store.getOrders(), user.id, "")) return { ok: false, message: "Этот промокод действует только на первый заказ." };
     return { ok: true, percent: p.percent, message: `Скидка ${p.percent}% применена${p.firstOrderOnly ? " (на первый заказ)" : ""}` };
   });
-  on("POST", "/api/orders", async ({ body, user, ip }) => {
+  /* 27.10.2026: one tap «Отправить» = one order, even when the answer got lost on a bad network and the app (or the person)
+     sends it again: the app gives every checkout its own key; the same key within 2 hours gets the same answer. */
+  const orderKeys = new Map(); // key → { at, result | pending }
+  on("POST", "/api/orders", async (ctx) => {
+    const k = /^[A-Za-z0-9_-]{8,64}$/.test(String(ctx.body.orderKey || "")) ? (ctx.user ? "u" + ctx.user.id : "ip" + ctx.ip) + ":" + ctx.body.orderKey : "";
+    for (const [x, v] of orderKeys) if (Date.now() - v.at > 2 * 3600e3) orderKeys.delete(x);
+    const was = k && orderKeys.get(k);
+    if (was) return was.pending;
+    const pending = placeOrder(ctx);
+    if (k) { orderKeys.set(k, { at: Date.now(), pending }); pending.catch(() => orderKeys.delete(k)); }
+    return pending;
+  });
+  async function placeOrder({ body, user, ip }) {
     if (!user && platforms.some((pf) => config.botTokens[pf])) throw httpError(401, `Откройте магазин через бота в ${PF_NAMES}, чтобы отправить заявку.`);
     const key = user ? "u" + user.id : "ip" + ip;
     const recent = (orderTimes.get(key) || []).filter((t) => Date.now() - t < 10 * 60e3);
@@ -583,7 +609,7 @@ function createApp(opts = {}) {
       ? `К оплате ${formatRub(order.toPay)}. Реквизиты для перевода — в приложении (Профиль → Мои заказы → «Оплатить»).`
       : `Менеджер ${S.brand || ""} свяжется с вами в течение 10 минут${S.hours ? " (" + S.hours.toLowerCase() + ")" : ""}.`.replace("  ", " ")), payNow ? "Оплатить" : false).catch(() => {});
     return Object.assign({ id: order.id, giftLink }, payNow ? { transfer: transferInfo(order) } : {}, order.payMethod === "transfer" && !payNow ? { transferAfter: true } : {});
-  });
+  }
   on("POST", "/api/track", ({ body, user, ip }) => {
     const type = ["visit", "view", "cart"].includes(body.type) ? body.type : null;
     if (!type) return { ok: false };
