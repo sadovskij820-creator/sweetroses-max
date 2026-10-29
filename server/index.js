@@ -101,10 +101,13 @@ function createApp(opts = {}) {
   const transferSettings = () => Object.assign({ enabled: false, mode: "now", card: "", phone: "", bank: "", holder: "", note: "" }, store.getCatalog().settings.transfer || {});
   const transferOn = () => { const t = transferSettings(); return !!(t.enabled && (t.card || t.phone)) && !paymentsOn(); };
   const transferPayable = (o) => o.payMethod === "transfer" && !o.paid && o.status !== "cancel" && o.status !== "done" && (o.transferMode !== "after" || o.status === "work");
+  /* the customer may cancel an order himself while it is not paid and no receipt / «Я оплатил» was sent (29.10.2026) */
+  const clientCancelable = (o) => !o.paid && o.status !== "cancel" && o.status !== "done" && !o.receipt && !o.transferClaimedAt
+    && (o.status === "pay" || !!o.awaitReceipt);
   function transferInfo(o) {
     const t = transferSettings();
     return { id: o.id, amount: o.toPay ?? o.totals.total, card: t.card, phone: t.phone, bank: t.bank, holder: t.holder, note: t.note, claimed: !!o.transferClaimedAt, paid: !!o.paid, payable: transferPayable(o),
-      receiptNeeded: !!o.awaitReceipt, receipt: !!o.receipt };
+      receiptNeeded: !!o.awaitReceipt, receipt: !!o.receipt, cancelable: clientCancelable(o) };
   }
   function transferText(o) {
     const t = transferSettings(), e = (x) => String(x).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
@@ -403,7 +406,7 @@ function createApp(opts = {}) {
       history: LY.on(L, "bonuses") ? c.history.slice(0, 20) : [],
       orders: myOrders(user.id).slice(-20).reverse().map((o) => ({
         id: o.id, createdAt: o.createdAt, status: o.status, paid: !!o.paid, total: o.totals.total, toPay: o.toPay ?? o.totals.total,
-        payMethod: o.payMethod || "", transferPayable: transferPayable(o), transferClaimed: !!o.transferClaimedAt, awaitReceipt: !!o.awaitReceipt,
+        payMethod: o.payMethod || "", transferPayable: transferPayable(o), transferClaimed: !!o.transferClaimedAt, awaitReceipt: !!o.awaitReceipt, cancelable: clientCancelable(o),
         bonusUsed: o.bonusUsed || 0, bonusAccrued: o.bonusAccrued || 0, date: o.date, time: o.time,
         lines: o.totals.lines.map((l) => ({ id: l.id, qty: l.qty, choc: l.choc || [], title: l.title })),
         giftLink: o.gift ? botLink("g_" + o.gift.id, user.platform) : "",
@@ -504,6 +507,20 @@ function createApp(opts = {}) {
       notify(`💳 <b>Заявка №${o.id}: клиент сообщил об оплате ${formatRub(o.toPay ?? o.totals.total)}</b>\n${o.name}, ${o.phone}\nПроверьте поступление в банке и нажмите «Оплата получена» в приложении (Управление → Заявки).`).catch(() => {});
     }
     return transferInfo(o);
+  });
+  on("POST", "/api/orders/:id/cancel", async ({ user, params }) => {
+    needUser(user);
+    const o = myOrders(user.id).find((x) => String(x.id) === params.id);
+    if (!o) throw httpError(404, "Заказ не найден");
+    if (o.status === "cancel") return { ok: true, status: "cancel" };
+    if (!clientCancelable(o)) throw httpError(400, o.paid || o.receipt || o.transferClaimedAt
+      ? "Оплата по заказу уже отправлена — чтобы отменить, позвоните нам" : "Этот заказ уже в работе — чтобы отменить, позвоните нам");
+    o.status = "cancel"; o.cancelReason = "Отменён клиентом"; o.cancelledAt = new Date().toISOString(); delete o.awaitReceipt;
+    const c = customers.get(user.id);
+    if (c && o.bonusUsed && !o.bonusRefunded) { const L = loyal(); LY.addBonus(c, o.bonusUsed, "refund", { days: L.burnDays, orderId: o.id, note: `Возврат за отменённый заказ №${o.id}` }); o.bonusRefunded = true; store.saveCustomers(); }
+    store.saveOrders();
+    notify(`❌ <b>Заявка №${o.id} отменена клиентом</b> (не оплачена)\n${escH(o.name)}, ${escH(o.phone)}\nСобирать не нужно.`).catch(() => {});
+    return { ok: true, status: "cancel", bonusRefunded: o.bonusUsed || 0 };
   });
   /* the receipt of a transfer (photo or screenshot): only with it the order goes to the managers */
   on("POST", "/api/orders/:id/receipt", async ({ user, params, body }) => {

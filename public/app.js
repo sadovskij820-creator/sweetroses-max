@@ -718,6 +718,7 @@
         ${t.note ? `<p class="muted" style="font-size:13px;margin:10px 0 0">${esc(t.note)}</p>` : ""}
         <div class="receipt-warn">⚠️ <b>После перевода обязательно прикрепите чек</b> — скриншот из банка. Без чека мы не начнём собирать букет.</div>
         <button class="btn block" style="margin-top:12px" data-action="receiptStep">Я оплатил(а) — прикрепить чек</button>
+        ${t.cancelable ? `<button class="btn ghost block" style="margin-top:8px" data-action="cancelOrder" data-id="${esc(id)}">Отменить заказ</button>` : ""}
       </div>
       <p class="muted" style="font-size:12.5px;margin-top:12px">Переведите точную сумму. Реквизиты всегда можно открыть снова: Профиль → Мои заказы → «Оплатить и прикрепить чек».</p>
     </div>`;
@@ -762,6 +763,7 @@
           ${o.status === "pay" && !o.paid ? `<button class="btn small" data-action="retryPay" data-id="${o.id}">Оплатить</button>` : ""}
           ${o.transferPayable && !o.transferClaimed ? `<a class="btn small" href="#/transfer/${o.id}" data-action="openTransfer" data-id="${o.id}">${o.awaitReceipt ? "Оплатить и прикрепить чек" : "Оплатить " + rub(o.toPay)}</a>` : ""}
           ${o.transferPayable && o.transferClaimed ? `<span class="muted" style="font-size:13px;align-self:center">💳 Оплата на проверке</span>` : ""}
+          ${o.cancelable ? `<button class="btn ghost small" data-action="cancelOrder" data-id="${o.id}">Отменить</button>` : ""}
           ${o.giftLink ? `<button class="btn ghost small" data-action="sendGift" data-link="${esc(o.giftLink)}">🎁 Открытка</button>` : ""}
         </div></div>`).join("") : `<p class="muted">Здесь появятся ваши заказы.</p>`}
       ${RVS() && orders.length ? `<a class="btn soft block" style="margin-top:12px" href="#/review">⭐ Оценить букет${rvBonus() ? ` · +${rvBonus()} бонусов` : ""}</a>` : ""}
@@ -1477,6 +1479,18 @@ ${d.shop && d.shop.noLevels ? "" : `      <h2 class="h2" style="font-size:22px">
     if (act === "receiptBack") { if (state.transfer) { state.transfer.step2 = false; render(); window.scrollTo(0, 0); } return; }
     if (act === "receiptStep") { if (state.transfer) { state.transfer.step2 = true; haptic(); render(); window.scrollTo(0, 0); } return; }
     if (act === "openTransfer") { state.transfer = null; return; }
+    if (act === "cancelOrder") {
+      const id = ds.id;
+      askConfirm(`Отменить заказ №${id}? Он ещё не оплачен — собирать его не будем.`, async () => {
+        try {
+          const r = await api(`/api/orders/${encodeURIComponent(id)}/cancel`, { method: "POST" });
+          haptic("ok"); state.transfer = null;
+          toast(`Заказ №${id} отменён${r.bonusRefunded ? ` · вернули ${r.bonusRefunded} бонусов` : ""}`);
+          await loadProfile(); location.hash = "#/profile"; render();
+        } catch (e) { toast(e.message); }
+      }, "Да, отменить");
+      return;
+    }
     if (act === "transferDone") {
       const t = state.transfer; if (!t) return;
       t.sending = true; render();
