@@ -77,3 +77,30 @@ test("a paid order or an order in work can't be cancelled by the customer", asyn
   assert.equal((await req(url + `/api/orders/${r.data.id}/cancel`, "POST", {}, user(621))).status, 400);
   assert.equal(find(app, r.data.id).status, "work");
 });
+
+test("«Откуда клиенты» counts only paid orders: placed without a receipt or cancelled don't count (11.11.2026)", async (t) => {
+  const { app, url } = await start(); t.after(() => app.server.close());
+  const S = app.store.getCatalog().settings;
+  S.sources = [{ slug: "insta", title: "Instagram" }]; app.store.setCatalog(app.store.getCatalog());
+  // three people came from Instagram
+  for (const id of [701, 702, 703]) await req(url + "/api/profile", "GET", null, user(id));
+  const cust = (id) => app.store.getCustomers().list[String(id)];
+  for (const id of [701, 702, 703]) cust(id).source = "insta";
+  app.store.saveCustomers();
+  const a = await req(url + "/api/orders", "POST", order(), user(701));            // ordered, left without a receipt
+  const b = await req(url + "/api/orders", "POST", order(), user(702));            // ordered and attached the receipt
+  await fetch(url + `/api/orders/${b.data.id}/receipt`, { method: "POST", headers: { "Content-Type": "image/png", "X-Init-Data": user(702) }, body: PNG });
+  const c = await req(url + "/api/orders", "POST", order(), user(703));            // ordered and cancelled
+  await req(url + `/api/orders/${c.data.id}/cancel`, "POST", {}, user(703));
+  const row = async () => (await req(url + "/api/admin/stats", "GET", null, user(100))).data.sources.find((x) => x.slug === "insta");
+  let r = await row();
+  assert.deepEqual([r.customers, r.buyers, r.orders], [3, 1, 1]);
+  assert.equal(r.revenue, find(app, b.data.id).toPay ?? find(app, b.data.id).totals.total);
+  // the shop marks «Оплата получена» for the first one (paid in cash, no receipt) — now it counts
+  await req(url + `/api/admin/orders/${a.data.id}`, "PATCH", { paid: true }, user(100));
+  r = await row();
+  assert.deepEqual([r.buyers, r.orders], [2, 2]);
+  // the QR/links report agrees
+  const q = (await req(url + "/api/admin/sources", "GET", null, user(100))).data.sources.find((x) => x.slug === "insta");
+  assert.equal(q.orders, 2);
+});

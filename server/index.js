@@ -697,10 +697,14 @@ function createApp(opts = {}) {
   }
   const AUTO_SOURCES = { friend: "Пригласили друзья («Приведи друга»)", hint: "Через «Намекнуть»", gift: "Получили цифровую открытку" };
   const sourceTitle = (slug) => { if (!slug) return "Без метки (нашли сами)"; const s = (store.getCatalog().settings.sources || []).find((x) => x.slug === slug); return s ? s.title : AUTO_SOURCES[slug] || slug; };
+  /** An order that counts in «Откуда клиенты» and the QR reports: really paid, not just placed (11.11.2026).
+   *  Transfer — only with a receipt or «Оплата получена»; online payment — only when paid; cancelled — never. */
+  const paidOrder = (o) => !!o.tgUser && o.status !== "cancel"
+    && (!!o.paid || (o.status !== "pay" && !o.awaitReceipt && (o.payMethod !== "transfer" || !!o.receipt)));
   /** «Откуда клиенты»: every source with people, orders and money, the biggest first. */
   function sourceStats(now = new Date()) {
     ensureReviewSource();
-    const all = Object.values(custDb().list), orders = store.getOrders().list.filter((o) => o.tgUser && o.status !== "cancel" && o.status !== "pay");
+    const all = Object.values(custDb().list), orders = store.getOrders().list.filter(paidOrder);
     const month = now.getTime() - 30 * 864e5;
     const slugs = [...(store.getCatalog().settings.sources || []).map((x) => x.slug), ...Object.keys(AUTO_SOURCES), ""];
     for (const c of all) if (!slugs.includes(c.source || "")) slugs.push(c.source);
@@ -889,7 +893,7 @@ function createApp(opts = {}) {
     ensureReviewSource();
     return (store.getCatalog().settings.sources || []).map((src) => {
       const ids = new Set(all.filter((c) => c.source === src.slug).map((c) => c.id));
-      const mine = orders.filter((o) => o.tgUser && ids.has(String(o.tgUser.id)) && o.status !== "cancel" && o.status !== "pay");
+      const mine = orders.filter((o) => paidOrder(o) && ids.has(String(o.tgUser.id)));
       const std = STD_SOURCES.find((x) => x.slug === src.slug);
       return Object.assign({}, src, std ? { std: true, hint: std.hint } : {}, { link: botLink("s_" + src.slug), links: linksFor(botLink, "s_" + src.slug), customers: ids.size, orders: mine.length, revenue: mine.reduce((sum, o) => sum + (o.toPay ?? o.totals.total), 0) });
     });

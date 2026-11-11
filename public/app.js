@@ -1159,8 +1159,8 @@
     <div class="bars" role="img" aria-label="Посетители по дням">${d.days.map((x) => `<i style="height:${(x.visitors / max) * 100}%" title="${x.date}: ${x.visitors}"></i>`).join("")}</div>
     <div style="display:flex;justify-content:space-between;font-size:11px" class="muted"><span>${d.days[0] ? d.days[0].date.slice(5) : ""}</span><span>сегодня</span></div>
     ${d.sources ? `<h2 class="h2" style="font-size:22px">Откуда клиенты</h2>
-    <p class="muted" style="font-size:12.5px;margin-top:-6px">За всё время: сколько людей пришло, сколько из них купили, заказы и сумма. «+N» — новые за 30 дней. Ссылки и QR — во вкладке «Ссылки и QR».</p>
-    ${d.sources.map((x) => `<div class="addon" style="align-items:flex-start"><span class="t">${esc(x.title)}${x.month ? ` <small class="muted">+${x.month}</small>` : ""}</span><span class="p" style="text-align:right">${x.customers} чел. · купили ${x.buyers}<br><small class="muted">${x.orders} ${plural(x.orders, "заказ", "заказа", "заказов")} · ${rub(x.revenue)}</small></span></div>`).join("")}` : ""}
+    <p class="muted" style="font-size:12.5px;margin-top:-6px">За всё время: сколько людей пришло, сколько из них оплатили, оплаченные заказы и сумма. Считаются только заказы с чеком или отмеченной оплатой — оформленные и брошенные без оплаты не входят. «+N» — новые за 30 дней. Ссылки и QR — во вкладке «Ссылки и QR».</p>
+    ${d.sources.map((x) => `<div class="addon" style="align-items:flex-start"><span class="t">${esc(x.title)}${x.month ? ` <small class="muted">+${x.month}</small>` : ""}</span><span class="p" style="text-align:right">${x.customers} чел. · оплатили ${x.buyers}<br><small class="muted">${x.orders} ${plural(x.orders, "оплаченный заказ", "оплаченных заказа", "оплаченных заказов")} · ${rub(x.revenue)}</small></span></div>`).join("")}` : ""}
     <h2 class="h2" style="font-size:22px">Чаще всего смотрят</h2>
     ${d.topProducts.length ? d.topProducts.map((p) => `<div class="addon"><span class="t">${esc(p.title)}</span><span class="p">${p.views} просм. · ${p.carts} в корзину</span></div>`).join("") : `<p class="muted">Пока нет данных.</p>`}`;
   }
@@ -1231,7 +1231,7 @@
       ${d.sources.map((x) => `<div class="src-card">
         <div class="src-h"><b>${esc(x.title)}</b>${x.std ? "" : `<button class="icon-x" data-action="delSource" data-slug="${esc(x.slug)}" aria-label="Удалить">×</button>`}</div>
         ${x.hint ? `<p class="muted" style="font-size:12.5px;margin:2px 0 6px">${esc(x.hint)}</p>` : ""}
-        <div class="src-stats"><span><b>${x.customers}</b> пришло</span><span><b>${x.orders}</b> заказов</span><span><b>${rub(x.revenue)}</b></span></div>
+        <div class="src-stats"><span><b>${x.customers}</b> пришло</span><span><b>${x.orders}</b> оплачено</span><span><b>${rub(x.revenue)}</b></span></div>
         ${qrBlocks(x.links, x.link, x.slug)}</div>`).join("")}
       <h2 class="h2" style="font-size:22px">Пришли от других покупателей</h2>
       ${d.auto.map((x) => `<div class="addon"><span class="t">${esc(x.title)}</span><span class="p">${x.customers} чел.</span></div>`).join("")}`;
@@ -1248,7 +1248,7 @@
       ${!d.enabled ? `<p class="err" style="font-size:13px">Отзывы выключены во вкладке «Бонусы».</p>` : ""}
       <div class="src-card">
         <div class="src-h"><b>QR для вкладыша в букет</b></div>
-        <div class="src-stats"><span><b>${d.fromCard.customers}</b> пришло по QR</span><span><b>${d.fromCard.orders}</b> заказов</span><span><b>${rub(d.fromCard.revenue)}</b></span></div>
+        <div class="src-stats"><span><b>${d.fromCard.customers}</b> пришло по QR</span><span><b>${d.fromCard.orders}</b> оплачено</span><span><b>${rub(d.fromCard.revenue)}</b></span></div>
         ${pfList(d.links, d.link).length ? qrBlocks(d.links, d.link, "otzyv") : `<p class="muted">QR появится, когда приложение подключат к боту.</p>`}
       </div>
       ${owner ? `<details class="history" style="margin-top:10px"><summary>Ссылка на отзывы в 2ГИС${d.link2gis ? "" : " — не указана"}</summary>
